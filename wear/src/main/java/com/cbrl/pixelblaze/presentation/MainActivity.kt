@@ -1,20 +1,9 @@
-// https://newsletter.jorgecastillo.dev/p/jetpack-compose-effect-handlers
-// https://developer.android.com/design/ui/wear/guides/components/buttons
-// https://foso.github.io/Jetpack-Compose-Playground/
-
 package com.cbrl.pixelblaze.presentation
 
 import android.app.RemoteInput
-import android.content.Context
 import android.content.Intent
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.os.Bundle
-import android.util.Log
 import android.view.inputmethod.EditorInfo
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -31,32 +20,24 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.lifecycle.LifecycleCoroutineScope
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -67,7 +48,7 @@ import androidx.wear.compose.foundation.ExperimentalWearFoundationApi
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
-import androidx.wear.compose.foundation.rememberActiveFocusRequester
+import androidx.wear.compose.foundation.requestFocusOnHierarchyActive
 import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.CircularProgressIndicator
 import androidx.wear.compose.material.CompactButton
@@ -81,235 +62,217 @@ import androidx.wear.compose.material.SplitToggleChip
 import androidx.wear.compose.material.Text
 import androidx.wear.input.RemoteInputIntentHelper
 import androidx.wear.input.wearableExtender
-import androidx.wear.tooling.preview.devices.WearDevices
 import com.cbrl.pixelblaze.presentation.theme.PixelblazeTheme
 import io.mhssn.colorpicker.ColorPicker
 import io.mhssn.colorpicker.ColorPickerType
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.emitAll
-import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.round
 
-@Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
-@Composable
-fun DefaultPreview() {
-    NavigationStack()
-}
-
 class MainActivity : ComponentActivity() {
-    var connectivityManager: ConnectivityManager? = null
-    private var connectivityCallback: ConnectivityManager.NetworkCallback? = null
-
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
-
         super.onCreate(savedInstanceState)
-
         setTheme(android.R.style.Theme_DeviceDefault)
+        setContent { NavigationStack() }
+    }
+}
 
-        try {
-            requestWifiConnection()
-        }
-        catch (e: Exception) {
-            Toast.makeText(this, "WiFi request failed: $e", Toast.LENGTH_SHORT).show()
-        }
+@Composable
+fun NavigationStack(
+    deviceViewModel: PixelblazeDeviceViewModel = viewModel(),
+    helmetViewModel: HelmetControllerViewModel = viewModel(),
+) {
+    val navController = rememberNavController()
+    val context = LocalContext.current
+    val discovery by deviceViewModel.state.collectAsStateWithLifecycle()
+    var attemptedAutoReconnect by rememberSaveable { mutableStateOf(false) }
 
-        setContent {
-            NavigationStack()
-        }
+    LaunchedEffect(discovery.rememberedDevice, discovery.devices) {
+        if (attemptedAutoReconnect) return@LaunchedEffect
+        val remembered = discovery.rememberedDevice ?: return@LaunchedEffect
+        val device = discovery.devices[remembered.id] ?: return@LaunchedEffect
+        attemptedAutoReconnect = true
+        helmetViewModel.open(device)
+        navController.navigate("${Screen.SegmentSelect.route}?device=${device.id}")
     }
 
-    override fun onDestroy() {
-        connectivityManager?.let {
-            it.bindProcessToNetwork(null)
-            connectivityCallback?.let {
-                connectivityManager!!.unregisterNetworkCallback(it)
-            }
+    NavHost(navController = navController, startDestination = Screen.DeviceList.route) {
+        composable(Screen.DeviceList.route) {
+            DeviceListScreen(
+                state = discovery,
+                onOpenWifiSettings = {
+                    context.startActivity(
+                        Intent("com.google.android.clockwork.settings.connectivity.wifi.ADD_NETWORK_SETTINGS"),
+                    )
+                },
+                onDeviceSelected = { device ->
+                    attemptedAutoReconnect = true
+                    helmetViewModel.open(device)
+                    navController.navigate("${Screen.SegmentSelect.route}?device=${device.id}")
+                },
+            )
         }
 
-        super.onDestroy()
+        composable(
+            route = "${Screen.SegmentSelect.route}?device={device}",
+            arguments = listOf(navArgument("device") { type = NavType.IntType }),
+        ) { entry ->
+            val deviceId = entry.arguments?.getInt("device")
+            val currentDevice = deviceId?.let(discovery.devices::get)
+                ?: discovery.rememberedDevice
+                    ?.takeIf { it.id == deviceId }
+                    ?.let { PixelblazeDevice(it.address, it.id) }
+
+            LaunchedEffect(currentDevice?.id, currentDevice?.address) {
+                currentDevice?.let(helmetViewModel::open)
+            }
+
+            val connection by helmetViewModel.connectionState.collectAsStateWithLifecycle()
+            SegmentSelectScreen(
+                connectionState = connection,
+                onRetry = helmetViewModel::retry,
+                onSegmentSelected = { segment ->
+                    helmetViewModel.selectSegment(segment)
+                    navController.navigate("${Screen.HelmetController.route}?segment=${segment.id}")
+                },
+            )
+        }
+
+        composable(
+            route = "${Screen.HelmetController.route}?segment={segment}",
+            arguments = listOf(navArgument("segment") { type = NavType.IntType }),
+        ) { entry ->
+            val segment = HelmetSegments.fromId(entry.arguments?.getInt("segment") ?: 0)
+                ?: HelmetSegments.Visor
+            LaunchedEffect(segment) { helmetViewModel.selectSegment(segment) }
+
+            val connection by helmetViewModel.connectionState.collectAsStateWithLifecycle()
+            ConnectionContent(connection, helmetViewModel::retry) {
+                HelmetControllerScreen(helmetViewModel)
+            }
+        }
     }
+}
 
-    private fun requestWifiConnection() {
-        connectivityManager = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
-        connectivityCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                super.onAvailable(network)
-                // The Wi-Fi network has been acquired. Bind it to use this network by default.
-                connectivityManager!!.bindProcessToNetwork(network)
-            }
-
-            override fun onLost(network: Network) {
-                super.onLost(network)
-                // Called when a network disconnects or otherwise no longer satisfies this request or callback.
-            }
-        }
-        connectivityManager!!.requestNetwork(
-            NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
-            connectivityCallback!!
+@Composable
+private fun ConnectionContent(
+    connectionState: HelmetConnectionState,
+    onRetry: () -> Unit,
+    readyContent: @Composable () -> Unit,
+) {
+    when (connectionState) {
+        HelmetConnectionState.Ready -> readyContent()
+        HelmetConnectionState.Idle,
+        HelmetConnectionState.Connecting,
+        -> StatusScreen("Connecting…", showProgress = true)
+        is HelmetConnectionState.Reconnecting -> StatusScreen(
+            "Reconnecting (${connectionState.attempt})…",
+            detail = connectionState.reason,
+            showProgress = true,
+        )
+        is HelmetConnectionState.MissingPattern -> StatusScreen(
+            connectionState.message,
+            actionLabel = "Retry",
+            onAction = onRetry,
+        )
+        is HelmetConnectionState.Error -> StatusScreen(
+            connectionState.message,
+            actionLabel = "Retry",
+            onAction = onRetry,
         )
     }
 }
 
-class PixelblazeDeviceViewModel : ViewModel() {
-    private val locator = DeviceLocator()
-
-    var deviceList = mutableStateMapOf<Int, PixelblazeDevice>()
-
-    init {
-        getDevices()
-    }
-
-    private fun getDevices() {
-        viewModelScope.launch {
-            //withTimeoutOrNull(2000) {
-            locator.getDevices()
-                .catch { e -> Log.e("PixelblazeDeviceViewModel", e.toString()) }
-                .collect { value -> deviceList[value.id] = value }
-            //}
-        }
-    }
-}
-
-class HelmetControllerViewModel(private val scope: LifecycleCoroutineScope) : ViewModel() {
-    var controller = HelmetController(scope)
-
-    var connectionStatus = MutableStateFlow<AsyncResult<Unit>>(AsyncResult.Loading)
-    var activeSegment = HelmetSegments.Visor
-
-    fun open(device: PixelblazeDevice) {
-        scope.launch {
-            device.start(scope).asAsyncResult().collect {
-                when (it) {
-                    is AsyncResult.Success<Unit> -> launch {
-                        connectionStatus.emitAll(controller.start(device).asAsyncResult())
-                    }
-                    is AsyncResult.Error -> connectionStatus.emit(it)
-                    else -> Unit
-                }
-            }
-        }
-    }
-}
-
 @Composable
-fun NavigationStack() {
-    val lifecycleScope = LocalLifecycleOwner.current.lifecycleScope
-
-    val navController = rememberNavController()
-
-    val deviceView = PixelblazeDeviceViewModel()
-    val helmetControllerView = HelmetControllerViewModel(lifecycleScope)
-
-    NavHost(navController = navController, startDestination = Screen.DeviceList.route) {
-        composable(route = Screen.DeviceList.route) {
-            DeviceListScreen(
-                deviceViewModel = deviceView,
-                onDeviceSelected = {
-                    navController.navigate(route = Screen.SegmentSelect.route + "?device=${it.id}")
-                }
-            )
-        }
-        composable(
-            route = Screen.SegmentSelect.route + "?device={device}",
-            arguments = listOf(
-                navArgument("device") {
-                    type = NavType.IntType
-                }
-            )
+private fun StatusScreen(
+    message: String,
+    detail: String? = null,
+    showProgress: Boolean = false,
+    actionLabel: String? = null,
+    onAction: () -> Unit = {},
+) {
+    PixelblazeTheme {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // This argument should always be present
-            val deviceID = it.arguments!!.getInt("device")
-
-            LaunchedEffect(deviceID) {
-                helmetControllerView.open(deviceView.deviceList[deviceID]!!)
+            if (showProgress) CircularProgressIndicator()
+            Text(message, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
+            detail?.takeIf(String::isNotBlank)?.let {
+                Text(it, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
             }
-
-            SegmentSelectScreen(onSegmentSelected = { segment ->
-                helmetControllerView.activeSegment = segment
-                navController.navigate(route = Screen.HelmetController.route + "?segment=${segment.ordinal}")
-            })
-        }
-        composable(
-            route = Screen.HelmetController.route + "?segment={segment}",
-            arguments = listOf(
-                navArgument("segment") {
-                    type = NavType.IntType
-                }
-            )
-        ) {
-            AsyncResultHandler(
-                helmetControllerView.connectionStatus.collectAsState().value,
-                onSuccess = { _ -> HelmetControllerScreen(helmetControllerView) }
-            )
+            actionLabel?.let {
+                CompactChip(label = { Text(it) }, onClick = onAction)
+            }
         }
     }
 }
 
 @Composable
 fun DeviceListScreen(
-    deviceViewModel: PixelblazeDeviceViewModel = viewModel(),
-    onDeviceSelected: (device: PixelblazeDevice) -> Unit
+    state: DeviceDiscoveryState,
+    onOpenWifiSettings: () -> Unit,
+    onDeviceSelected: (PixelblazeDevice) -> Unit,
 ) {
-    val deviceList = remember { deviceViewModel.deviceList }
-
     PixelblazeTheme {
-        Box(modifier = Modifier, contentAlignment = Alignment.Center) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "Device List",
-                    modifier = Modifier.padding(top = 16.dp),
-                    textAlign = TextAlign.Center
-                )
-
-                DeviceChips(deviceList, onDeviceSelected)
+        if (state.devices.isNotEmpty()) {
+            val scrollState = rememberScalingLazyListState()
+            ScalingLazyColumn(state = scrollState) {
+                item { Text("Pixelblaze devices", textAlign = TextAlign.Center) }
+                items(state.devices.values.sortedBy { it.id }) { device ->
+                    Chip(
+                        label = { Text(device.id.toUInt().toString(16).uppercase()) },
+                        secondaryLabel = { Text(device.address) },
+                        onClick = { onDeviceSelected(device) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
-        }
-    }
-}
-
-@OptIn(ExperimentalStdlibApi::class)
-@Composable
-fun DeviceChips(
-    devices: Map<Int, PixelblazeDevice>,
-    onDeviceSelected: (device: PixelblazeDevice) -> Unit
-) {
-    val scrollState = rememberScalingLazyListState()
-
-    ScalingLazyColumn(state = scrollState) {
-        items(items = devices.values.toList()) { device ->
-            Chip(
-                label = { Text(device.id.toHexString(HexFormat.UpperCase)) },
-                secondaryLabel = { Text(text = device.address) },
-                onClick = { onDeviceSelected(device) },
-                //contentPadding = PaddingValues(horizontal = 32.dp),
-                modifier = Modifier.fillMaxWidth(),
+        } else {
+            StatusScreen(
+                message = if (state.wifiAvailable) "Searching for Pixelblaze…" else "Wi-Fi is required",
+                detail = state.errorMessage,
+                showProgress = state.wifiAvailable,
+                actionLabel = if (state.wifiAvailable) null else "Wi-Fi settings",
+                onAction = onOpenWifiSettings,
             )
         }
     }
 }
 
 @Composable
-fun SegmentSelectScreen(onSegmentSelected: (segment: HelmetSegments) -> Unit) {
-    val scrollState = rememberScalingLazyListState()
-
+fun SegmentSelectScreen(
+    connectionState: HelmetConnectionState,
+    onRetry: () -> Unit,
+    onSegmentSelected: (HelmetSegments) -> Unit,
+) {
     PixelblazeTheme {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            ScalingLazyColumn(state = scrollState) {
-                items(items = HelmetSegments.entries) { segment ->
-                    Chip(
-                        label = { Text(segment.prettyName) },
-                        onClick = { onSegmentSelected(segment) },
-                        modifier = Modifier.fillMaxWidth()
+        val scrollState = rememberScalingLazyListState()
+        ScalingLazyColumn(state = scrollState) {
+            item {
+                when (connectionState) {
+                    HelmetConnectionState.Ready -> Text("Choose a segment")
+                    HelmetConnectionState.Connecting -> Text("Connecting…")
+                    is HelmetConnectionState.Reconnecting -> Text("Reconnecting…")
+                    is HelmetConnectionState.MissingPattern -> CompactChip(
+                        label = { Text("Helmet pattern missing") },
+                        onClick = onRetry,
                     )
+                    is HelmetConnectionState.Error -> CompactChip(
+                        label = { Text("Retry connection") },
+                        onClick = onRetry,
+                    )
+                    HelmetConnectionState.Idle -> Text("Waiting for device…")
                 }
+            }
+            items(HelmetSegments.entries) { segment ->
+                Chip(
+                    label = { Text(segment.prettyName) },
+                    onClick = { onSegmentSelected(segment) },
+                    enabled = connectionState == HelmetConnectionState.Ready,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }
@@ -317,38 +280,25 @@ fun SegmentSelectScreen(onSegmentSelected: (segment: HelmetSegments) -> Unit) {
 
 @Composable
 fun HelmetControllerScreen(controllerView: HelmetControllerViewModel) {
-    val pagerState = rememberPagerState(pageCount = { 4 })
-
-    var selectedPage by remember { mutableIntStateOf(0) }
-    var finalValue by remember { mutableIntStateOf(0) }
-
-    val animatedSelectedPage by animateFloatAsState(
-        targetValue = selectedPage.toFloat(),
-    ) {
-        finalValue = it.toInt()
-    }
-
-    val pageIndicatorState: PageIndicatorState = remember {
+    val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
+    val pageCount = if (segment == HelmetSegments.Visor) 5 else 4
+    val pagerState = rememberPagerState(pageCount = { pageCount })
+    val pageIndicatorState = remember(pagerState) {
         object : PageIndicatorState {
-            override val pageOffset: Float
-                get() = animatedSelectedPage - finalValue
-
-            override val selectedPage: Int
-                get() = finalValue
-
-            override val pageCount: Int
-                get() = pagerState.pageCount
+            override val pageOffset: Float get() = pagerState.currentPageOffsetFraction
+            override val selectedPage: Int get() = pagerState.currentPage
+            override val pageCount: Int get() = pagerState.pageCount
         }
     }
 
     PixelblazeTheme {
-        HorizontalPager(state = pagerState) {page ->
-            selectedPage = page
+        HorizontalPager(state = pagerState) { page ->
             when (page) {
                 0 -> EffectSelector(controllerView)
                 1 -> HelmetBrightnessControl(controllerView)
                 2 -> HelmetColorControl(controllerView)
-                3 -> VisorMessageScreen(controllerView)
+                3 -> SegmentOptionsControl(controllerView)
+                4 -> VisorMessageScreen(controllerView)
             }
         }
         HorizontalPageIndicator(pageIndicatorState = pageIndicatorState)
@@ -357,25 +307,22 @@ fun HelmetControllerScreen(controllerView: HelmetControllerViewModel) {
 
 @Composable
 fun EffectSelector(controllerView: HelmetControllerViewModel) {
+    val state by controllerView.controller.state.collectAsStateWithLifecycle()
+    val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
+    val effectId = state?.getSegment(segment)?.getState(SegmentVars.Effect)?.toInt() ?: 0
     val scrollState = rememberScalingLazyListState()
 
-    val state = controllerView.controller.state.collectAsState(initial = HelmetState())
-    val effect = state.value.getSegment(HelmetSegments.Visor).getState(SegmentVars.Effect).toInt()
-
-    var currentEffect by remember(effect) { mutableIntStateOf(effect) }
-
     ScalingLazyColumn(state = scrollState) {
-        items(HelmetEffects.entries.reversed()) {
-            effect -> SplitToggleChip(
-                label = { Text(effect.name, textAlign = TextAlign.Center) },
-                onClick = { /* TODO: Navigate to effect-specific controls */ },
+        item { Text(segment.prettyName, textAlign = TextAlign.Center) }
+        items(HelmetEffects.availableFor(segment).reversed()) { effect ->
+            val select = { controllerView.controller.setSegmentEffect(segment, effect) }
+            SplitToggleChip(
+                label = { Text(effect.prettyName, textAlign = TextAlign.Center) },
+                onClick = select,
                 modifier = Modifier.fillMaxWidth(),
-                checked = (currentEffect == effect.ordinal),
-                toggleControl = { RadioButton(selected = (currentEffect == effect.ordinal)) },
-                onCheckedChange = {
-                    controllerView.controller.setSegmentEffect(controllerView.activeSegment, effect.ordinal)
-                    currentEffect = effect.ordinal
-                }
+                checked = effectId == effect.id,
+                toggleControl = { RadioButton(selected = effectId == effect.id) },
+                onCheckedChange = { select() },
             )
         }
     }
@@ -384,47 +331,42 @@ fun EffectSelector(controllerView: HelmetControllerViewModel) {
 @OptIn(ExperimentalWearFoundationApi::class)
 @Composable
 fun HelmetBrightnessControl(controllerView: HelmetControllerViewModel) {
-    val state = controllerView.controller.state.collectAsState(initial = HelmetState())
-    val br = state.value.getSegment(HelmetSegments.Visor).getState(SegmentVars.Brightness).toFloat()
-
-    var brightness by remember(br) { mutableFloatStateOf(br) }
-
+    val state by controllerView.controller.state.collectAsStateWithLifecycle()
+    val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
+    val deviceBrightness = state?.getSegment(segment)?.getState(SegmentVars.Brightness)?.toFloat() ?: 0f
+    var brightness by remember(deviceBrightness, segment) { mutableFloatStateOf(deviceBrightness) }
     val animatedBrightness by animateFloatAsState(
         targetValue = brightness,
-        animationSpec = ProgressIndicatorDefaults.ProgressAnimationSpec
+        animationSpec = ProgressIndicatorDefaults.ProgressAnimationSpec,
+        label = "brightness",
     )
-
-    val focusRequester = rememberActiveFocusRequester()
-
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
+            .fillMaxSize()
             .onRotaryScrollEvent {
                 brightness = when {
-                    it.verticalScrollPixels > 0 -> min(brightness + 0.05f, 1.0f)
-                    it.verticalScrollPixels < 0 -> max(brightness - 0.05f, 0.0f)
+                    it.verticalScrollPixels > 0 -> min(brightness + 0.05f, 1f)
+                    it.verticalScrollPixels < 0 -> max(brightness - 0.05f, 0f)
                     else -> brightness
                 }
                 true
             }
-            .focusRequester(focusRequester)
-            .focusable()
+            .requestFocusOnHierarchyActive()
+            .focusable(),
     ) {
         CircularProgressIndicator(
             progress = animatedBrightness,
-            modifier = Modifier.fillMaxSize().padding(all = 1.dp),
-            strokeWidth = 5.dp, //ProgressIndicatorDefaults.FullScreenStrokeWidth (internal?)
-            startAngle = 290.0f,
-            endAngle =  250.0f,
+            modifier = Modifier.fillMaxSize().padding(1.dp),
+            strokeWidth = 5.dp,
+            startAngle = 290f,
+            endAngle = 250f,
         )
-        Text(
-            text = "%.0f%%".format(round(brightness * 100)),
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
+        Text("%.0f%%".format(round(brightness * 100)), modifier = Modifier.align(Alignment.TopCenter))
         CompactChip(
-            label = { Text("Set Brightness") },
+            label = { Text("Set brightness") },
             modifier = Modifier.align(Alignment.Center),
-            onClick = { controllerView.controller.setSegmentBrightness(controllerView.activeSegment, brightness) }
+            onClick = { controllerView.controller.setSegmentBrightness(segment, brightness) },
         )
     }
 }
@@ -432,113 +374,141 @@ fun HelmetBrightnessControl(controllerView: HelmetControllerViewModel) {
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun HelmetColorControl(controllerView: HelmetControllerViewModel) {
-    var color by remember { mutableStateOf(Color.Red) }
+    val state by controllerView.controller.state.collectAsStateWithLifecycle()
+    val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
+    val segmentState = state?.getSegment(segment)
+    val hue = (segmentState?.getState(SegmentVars.Hue)?.toFloat() ?: 0f) * 360f
+    val saturation = segmentState?.getState(SegmentVars.Saturation)?.toFloat() ?: 1f
+    var color by remember(hue, saturation, segment) { mutableStateOf(Color.hsv(hue, saturation, 1f)) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         ColorPicker(
-            type = ColorPickerType.Circle(
-                showBrightnessBar = false,
-                showAlphaBar = false
-            ),
-            modifier = Modifier.fillMaxSize(fraction = 0.75f).align(Alignment.CenterHorizontally)
-        ) {
-            color = it
-        }
+            type = ColorPickerType.Circle(showBrightnessBar = false, showAlphaBar = false),
+            modifier = Modifier.fillMaxSize(0.75f).align(Alignment.CenterHorizontally),
+        ) { color = it }
         CompactChip(
-            label = { Text("Set Color") },
-            onClick = { controllerView.controller.setSegmentColor(controllerView.activeSegment, color) },
-            modifier = Modifier.align(Alignment.CenterHorizontally)
+            label = { Text("Set color") },
+            onClick = { controllerView.controller.setSegmentColor(segment, color) },
+            modifier = Modifier.align(Alignment.CenterHorizontally),
         )
     }
 }
 
-/*
 @Composable
-fun VisorMessageEditor(controllerView: HelmetControllerViewModel) {
-    val state = controllerView.controller.state.collectAsState(initial = HelmetState())
-    var message by remember(state.value.getMessage().value) { mutableStateOf(state.value.getMessage().value) }
+fun SegmentOptionsControl(controllerView: HelmetControllerViewModel) {
+    val state by controllerView.controller.state.collectAsStateWithLifecycle()
+    val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
+    val segmentState = state?.getSegment(segment)
+    var speed by remember(segment, segmentState?.getState(SegmentVars.Speed)) {
+        mutableFloatStateOf(segmentState?.getState(SegmentVars.Speed)?.toFloat() ?: 1f)
+    }
+    var fade by remember(segment, segmentState?.getState(SegmentVars.FTime)) {
+        mutableFloatStateOf(segmentState?.getState(SegmentVars.FTime)?.toFloat() ?: 0f)
+    }
+    val enabled = (segmentState?.getState(SegmentVars.Switch) ?: 1.0) >= 0.5
+    val scrollState = rememberScalingLazyListState()
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        TextField(
-            value = message,
-            onValueChange = { newValue -> message = newValue },
-            modifier = Modifier.align(Alignment.Center)
-        )
-        CompactChip(
-            label = { Text("Set Message") },
-            onClick = { },
-            //onCLick = { controllerView.stateMgr.setVisorMessage(message) },
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
+    ScalingLazyColumn(state = scrollState) {
+        if (segment == HelmetSegments.Visor) {
+            item {
+                Chip(
+                    label = { Text("Emergency blackout") },
+                    onClick = { controllerView.controller.setAllSegmentsEnabled(false) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                CompactChip(
+                    label = { Text("Enable all segments") },
+                    onClick = { controllerView.controller.setAllSegmentsEnabled(true) },
+                )
+            }
+        }
+        item {
+            Chip(
+                label = { Text(if (enabled) "Segment on" else "Segment off") },
+                onClick = { controllerView.controller.setSegmentEnabled(segment, !enabled) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item { ValueStepper("Speed", speed, 0.05f, 10f, 0.1f) { speed = it } }
+        item {
+            CompactChip(
+                label = { Text("Apply speed") },
+                onClick = { controllerView.controller.setSegmentSpeed(segment, speed) },
+            )
+        }
+        item { ValueStepper("Fade seconds", fade, 0f, 30f, 0.25f) { fade = it } }
+        item {
+            CompactChip(
+                label = { Text("Apply fade") },
+                onClick = { controllerView.controller.setSegmentFadeTime(segment, fade) },
+            )
+        }
     }
 }
-*/
+
+@Composable
+private fun ValueStepper(
+    label: String,
+    value: Float,
+    minimum: Float,
+    maximum: Float,
+    step: Float,
+    onValueChange: (Float) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CompactButton(onClick = { onValueChange(max(minimum, value - step)) }) { Text("−") }
+        Text("$label\n%.2f".format(value), textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+        CompactButton(onClick = { onValueChange(min(maximum, value + step)) }) { Text("+") }
+    }
+}
 
 @Composable
 fun UserInputBox(
     modifier: Modifier = Modifier,
     text: String = "",
-    onInput: (input: String) -> Unit
+    onInput: (String) -> Unit,
 ) {
     val inputTextKey = "input_text"
-
-    val remoteInputs: List<RemoteInput> = listOf(
+    val remoteInputs = listOf(
         RemoteInput.Builder(inputTextKey)
-            .setLabel("Input")
+            .setLabel("Helmet message")
             .wearableExtender {
                 setEmojisAllowed(false)
                 setInputActionType(EditorInfo.IME_ACTION_DONE)
             }
             .build(),
     )
-
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        it.data?.let { data ->
-            val results: Bundle = RemoteInput.getResultsFromIntent(data)
-            val newInputText: CharSequence? = results.getCharSequence(inputTextKey)
-            val inputString = newInputText?.toString() ?: ""
-            onInput(inputString)
-        }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val data = it.data ?: return@rememberLauncherForActivityResult
+        val results = RemoteInput.getResultsFromIntent(data) ?: return@rememberLauncherForActivityResult
+        onInput(results.getCharSequence(inputTextKey)?.toString().orEmpty())
+    }
+    val intent: Intent = RemoteInputIntentHelper.createActionRemoteInputIntent().also {
+        RemoteInputIntentHelper.putRemoteInputsExtra(it, remoteInputs)
     }
 
-    val intent: Intent = RemoteInputIntentHelper.createActionRemoteInputIntent()
-    RemoteInputIntentHelper.putRemoteInputsExtra(intent, remoteInputs)
-
-    Box(modifier = modifier) {
-        Row(modifier = modifier.fillMaxWidth(0.75f)) {
-            Text(text = text, Modifier.weight(1f))
-            CompactButton(
-                onClick = { launcher.launch(intent) },
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Edit,
-                    contentDescription = "User input"
-                )
-            }
+    Row(modifier = modifier.fillMaxWidth(0.8f), verticalAlignment = Alignment.CenterVertically) {
+        Text(text.ifEmpty { "No message" }, Modifier.weight(1f), textAlign = TextAlign.Center)
+        CompactButton(onClick = { launcher.launch(intent) }) {
+            Icon(Icons.Filled.Edit, contentDescription = "Edit helmet message")
         }
     }
 }
 
 @Composable
 fun VisorMessageScreen(controllerView: HelmetControllerViewModel) {
-    val state = controllerView.controller.state.collectAsState(initial = HelmetState())
-    val msgValue = state.value.getMessage().value
-    var userInput by remember { mutableStateOf(msgValue) }
+    val state by controllerView.controller.state.collectAsStateWithLifecycle()
+    val message = state?.getMessage()?.value.orEmpty()
+    var userInput by remember(message) { mutableStateOf(message) }
 
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier.fillMaxSize()
-    ) {
-        UserInputBox(
-            text = msgValue,
-            onInput = { input -> userInput = input }
-        )
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+        UserInputBox(text = userInput, onInput = { userInput = MessageState.sanitize(it) })
         CompactChip(
-            label = { Text("Set Message") },
+            label = { Text("Set message") },
             onClick = { controllerView.controller.setMessageText(userInput) },
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier.align(Alignment.BottomCenter),
         )
     }
 }

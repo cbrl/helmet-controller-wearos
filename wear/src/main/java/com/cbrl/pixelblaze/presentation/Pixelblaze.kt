@@ -1,5 +1,6 @@
 package com.cbrl.pixelblaze.presentation
 
+import android.net.Network
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
@@ -9,191 +10,223 @@ import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.readBytes
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.Closeable
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.DatagramChannel
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
-import java.nio.charset.Charset
-import kotlin.coroutines.coroutineContext
+import java.nio.charset.StandardCharsets
 
-class PixelblazeDevice(val address: String, val id: Int) {
+data class PixelblazeDevice(val address: String, val id: Int) : Closeable {
     companion object {
         const val API_PORT = 81
+        private const val RESPONSE_TIMEOUT_MILLIS = 5_000L
     }
 
-    private val client = HttpClient(CIO) {
-        install(WebSockets)
+    private val clientDelegate = lazy {
+        HttpClient(CIO) {
+            install(WebSockets)
+        }
     }
+    private val client by clientDelegate
 
-    private val _variableState = MutableSharedFlow<JSONObject>(replay = 1) //need replay to allow fetching the last value
+    private val _variableState = MutableSharedFlow<JSONObject>(replay = 1)
     val variableState: SharedFlow<JSONObject> = _variableState
 
-    private val commandFlow = MutableSharedFlow<JSONObject>(replay = 3)
+    private val commandFlow = MutableSharedFlow<JSONObject>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
 
-    private val _patterns: MutableMap<String, PatternInfo> = mutableMapOf()
-    val patterns: Map<String, PatternInfo> = _patterns
+    private val _patterns = MutableStateFlow<Map<String, PatternInfo>>(emptyMap())
+    val patternState: StateFlow<Map<String, PatternInfo>> = _patterns
+    val patterns: Map<String, PatternInfo> get() = _patterns.value
 
-    fun start(scope: CoroutineScope): Flow<Unit> = callbackFlow {
-        scope.launch {
-            client.webSocket(host = address, port = API_PORT) {
-                getPatternInfo(this).map { entry -> _patterns[entry.key] = entry.value }
+    /**
+     * Opens one WebSocket session. Collection completes with an error when the session is lost,
+     * allowing the repository/ViewModel to apply an explicit reconnect policy.
+     */
+    fun start(): Flow<Unit> = callbackFlow {
+        val connectionJob = launch {
+            try {
+                client.webSocket(host = address, port = API_PORT) {
+                    // Disable preview frames before requesting a potentially multi-frame program list.
+                    send(JSONObject().put("sendUpdates", false).toString())
+                    _patterns.value = getPatternInfo(this)
 
-                val mainLoop = listOf(
-                    launch { runFetchStateLoop(this@webSocket) },
-                    launch { runSendLoop(this@webSocket) },
-                )
+                    val loops = listOf(
+                        launch { runReceiveLoop(this@webSocket) },
+                        launch { runSendLoop(this@webSocket) },
+                        launch { runFetchStateLoop() },
+                    )
 
-                // Notify listeners that setup has completed
-                send(Unit)
+                    trySend(Unit).getOrThrow()
+                    loops.joinAll()
+                }
 
-                mainLoop.joinAll()
+                close(IOException("Pixelblaze closed the WebSocket connection"))
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Throwable) {
+                close(exception)
             }
         }
 
-        awaitClose {
-            close()
-        }
+        awaitClose { connectionJob.cancel() }
     }
 
     fun trySetPatternByName(patternName: String): Boolean {
-        return trySetPatternByID(patterns.getValue(patternName).id)
+        val pattern = patterns[patternName] ?: return false
+        return trySetPatternByID(pattern.id)
     }
 
-    fun trySetPatternByID(patternID: String): Boolean {
-        val command = "{\"activeProgramId\": \"${patternID}\"}"
-        return trySendCommand(command)
-    }
+    fun trySetPatternByID(patternID: String): Boolean = trySendCommand(
+        JSONObject().put("activeProgramId", patternID),
+    )
 
     suspend fun setPatternByName(patternName: String) {
-        setPatternByID(patterns.getValue(patternName).id)
+        val pattern = patterns[patternName]
+            ?: throw NoSuchElementException("Pattern '$patternName' is not installed")
+        setPatternByID(pattern.id)
     }
 
     suspend fun setPatternByID(patternID: String) {
-        val setCmd = "{\"activeProgramId\": \"${patternID}\"}"
-        sendCommand(setCmd)
+        sendCommand(JSONObject().put("activeProgramId", patternID))
     }
 
-    fun trySetSendUpdates(enabled: Boolean): Boolean {
-        val command = "{\"sendUpdates\": ${enabled}}"
-        return trySendCommand(command)
-    }
+    fun trySetSendUpdates(enabled: Boolean): Boolean = trySendCommand(
+        JSONObject().put("sendUpdates", enabled),
+    )
 
     suspend fun setSendUpdates(enabled: Boolean) {
-        val command = "{\"sendUpdates\": ${enabled}}"
-        sendCommand(command)
+        sendCommand(JSONObject().put("sendUpdates", enabled))
     }
 
-    fun trySetVars(variables: JSONObject): Boolean {
-        val command = JSONObject().put("setVars", variables)
-        return trySendCommand(command)
-    }
+    fun trySetVars(variables: JSONObject): Boolean = trySendCommand(
+        JSONObject().put("setVars", variables),
+    )
 
     suspend fun setVars(variables: JSONObject) {
-        val command = JSONObject().put("setVars", variables)
-        sendCommand(command)
+        sendCommand(JSONObject().put("setVars", variables))
     }
 
-    fun trySendCommand(command: String): Boolean {
-        return trySendCommand(JSONObject(command))
-    }
+    fun trySendCommand(command: String): Boolean = trySendCommand(JSONObject(command))
 
-    fun trySendCommand(command: JSONObject): Boolean {
-        return commandFlow.tryEmit(command)
-    }
+    fun trySendCommand(command: JSONObject): Boolean = commandFlow.tryEmit(command)
 
-    suspend fun sendCommand(command: String) {
-        sendCommand(JSONObject(command))
-    }
+    suspend fun sendCommand(command: String) = sendCommand(JSONObject(command))
 
     suspend fun sendCommand(command: JSONObject) {
         commandFlow.emit(command)
     }
 
-    private suspend fun runFetchStateLoop(session: WebSocketSession, intervalMillis: Long = 250) {
-        // Poll for updated variable state
+    private suspend fun runFetchStateLoop(intervalMillis: Long = 1_000L) {
         while (true) {
-            getVariableState(session)?.let { _variableState.emit(it) }
+            commandFlow.emit(JSONObject().put("getVars", true))
             delay(intervalMillis)
         }
     }
 
     private suspend fun runSendLoop(session: WebSocketSession) {
-        // Send queued commands to device
-        commandFlow.collect {
-            session.send(it.toString())
+        commandFlow.collect { session.send(it.toString()) }
+    }
+
+    private suspend fun runReceiveLoop(session: WebSocketSession) {
+        for (frame in session.incoming) {
+            if (frame is Frame.Text) {
+                val response = runCatching { JSONObject(frame.readText()) }.getOrNull() ?: continue
+                if (response.optJSONObject("vars") != null) {
+                    _variableState.emit(response)
+                }
+            }
         }
+        throw IOException("Pixelblaze receive channel closed")
     }
 
     private suspend fun getPatternInfo(session: WebSocketSession): Map<String, PatternInfo> {
-        val listCmd = "{\"listPrograms\": true}"
+        val accumulator = ProgramListAccumulator()
+        session.send(JSONObject().put("listPrograms", true).toString())
 
-        // Try multiple times in case status reports are received instead
-        for (i in 1..50) {
-            session.send(listCmd)
-            val response = session.incoming.receive() as? Frame.Binary
-
-            response?.readBytes()?.let { res ->
-                if (res.size > 2 && res[0].toInt() == 0x07) {
-                    return PatternInfo.fromPixelblazeResponse(res.sliceArray(2..<res.size))
+        withTimeout(RESPONSE_TIMEOUT_MILLIS) {
+            while (true) {
+                when (val response = session.incoming.receive()) {
+                    is Frame.Binary -> if (accumulator.accept(response.readBytes())) {
+                        return@withTimeout
+                    }
+                    else -> Unit // Status messages are asynchronous and may arrive between fragments.
                 }
             }
-
         }
 
-        return mapOf()
+        return accumulator.patterns()
     }
 
-    private suspend fun getVariableState(session: WebSocketSession): JSONObject? {
-        val varCmd = "{\"getVars\": true}"
-
-        // Try multiple times in case status reports are received as well
-        for (i in 1..50) {
-            sendCommand(varCmd)
-            val response = session.incoming.receive() as? Frame.Text
-
-            response?.readText()?.let {
-                if (it.contains("vars")) {
-                    return JSONObject(it)
-                }
-            }
-        }
-
-        return null
+    override fun close() {
+        if (clientDelegate.isInitialized()) client.close()
     }
 }
 
-data class PatternInfo(val name: String, val id: String) {
+data class PatternInfo(val name: String, val id: String)
+
+/** Accumulates the documented 0x07 multi-frame program-list response. */
+class ProgramListAccumulator {
+    private val payload = ByteArrayOutputStream()
+    private var complete = false
+
+    fun accept(frame: ByteArray): Boolean {
+        if (frame.size < 2 || frame[0].toInt() != 0x07) return false
+
+        val flags = frame[1].toInt()
+        if (flags and START_FLAG != 0) {
+            payload.reset()
+            complete = false
+        }
+        payload.write(frame, 2, frame.size - 2)
+        complete = flags and END_FLAG != 0
+        return complete
+    }
+
+    fun patterns(): Map<String, PatternInfo> {
+        check(complete) { "Program list is incomplete" }
+        return parsePrograms(payload.toByteArray())
+    }
+
     companion object {
-        fun fromPixelblazeResponse(bytes: ByteArray): Map<String, PatternInfo> {
-            val info = mutableMapOf<String, PatternInfo>()
+        private const val START_FLAG = 0x01
+        private const val END_FLAG = 0x04
 
-            val programs = bytes.toString(Charset.forName("utf8")).split("\n")
-
-            for (programData in programs) {
-                val pair = programData.split("\t")
-                if (pair.size == 2) {
-                    info[pair[1]] = PatternInfo(pair[1], pair[0])
+        fun parsePrograms(bytes: ByteArray): Map<String, PatternInfo> = buildMap {
+            bytes.toString(StandardCharsets.UTF_8)
+                .lineSequence()
+                .filter { it.isNotBlank() }
+                .forEach { programData ->
+                    val pair = programData.split('\t', limit = 2)
+                    if (pair.size == 2 && pair[0].isNotBlank() && pair[1].isNotBlank()) {
+                        put(pair[1], PatternInfo(name = pair[1], id = pair[0]))
+                    }
                 }
-            }
-
-            return info
         }
     }
 }
@@ -202,58 +235,57 @@ class DeviceLocator {
     companion object {
         const val PORT = 1889
         const val BEACON_ID = 42
+        private const val MIN_BEACON_BYTES = 12
+
+        fun parseBeacon(bytes: ByteArray, address: String): PixelblazeDevice? {
+            if (bytes.size < MIN_BEACON_BYTES) return null
+            val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+            val receivedType = buffer.getInt()
+            val receivedID = buffer.getInt()
+            return if (receivedType == BEACON_ID) PixelblazeDevice(address, receivedID) else null
+        }
     }
 
-    private val dataChannel: DatagramChannel = DatagramChannel.open().apply {
-        bind(InetSocketAddress(PORT))
-        configureBlocking(false)
-    }
+    /** Creates fresh selector/socket resources for every collection so discovery can restart. */
+    fun getDevices(network: Network? = null): Flow<PixelblazeDevice> = callbackFlow {
+        val discoveryJob = launch(Dispatchers.IO) {
+            val selector = Selector.open()
+            val dataChannel = DatagramChannel.open()
+            try {
+                dataChannel.configureBlocking(false)
+                network?.bindSocket(dataChannel.socket())
+                dataChannel.bind(InetSocketAddress(PORT))
+                dataChannel.register(selector, SelectionKey.OP_READ)
 
-    private val selector: Selector = Selector.open()
+                val buffer = ByteBuffer.allocate(64)
+                while (isActive) {
+                    if (selector.select(250) <= 0) continue
 
-    init {
-        dataChannel.register(selector, SelectionKey.OP_READ)
-    }
+                    val keys = selector.selectedKeys().iterator()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        keys.remove()
+                        if (!key.isReadable) continue
 
-    fun getDevices(): Flow<PixelblazeDevice> = callbackFlow {
-        // Start listening in IO context
-        withContext(Dispatchers.IO) {
-            while (isActive) {
-                try {
-                    getDevice()?.let { send(it) }
+                        buffer.clear()
+                        val sender = dataChannel.receive(buffer) as? InetSocketAddress ?: continue
+                        val received = buffer.position()
+                        if (received < MIN_BEACON_BYTES) continue
+
+                        val bytes = ByteArray(received)
+                        buffer.flip()
+                        buffer.get(bytes)
+                        parseBeacon(bytes, sender.hostString)?.let { trySend(it) }
+                    }
                 }
-                catch (e: Exception) {
-                    close(e)
+            } finally {
+                withContext(Dispatchers.IO) {
+                    dataChannel.close()
+                    selector.close()
                 }
             }
         }
 
-        awaitClose {
-            dataChannel.close()
-            selector.close()
-        }
-    }
-
-    private fun getDevice(timeout: Long = 100): PixelblazeDevice? {
-        // Wait for incoming packets with timeout
-        if (selector.select(timeout) <= 0) {
-            return null
-        }
-
-        selector.selectedKeys().filter { it.isReadable }.forEach { _ ->
-            val buffer = ByteBuffer.allocate(65536)
-            val sender = dataChannel.receive(buffer) as InetSocketAddress?
-
-            if (sender != null && buffer.limit() >= 12) {
-                val receivedType = buffer.order(ByteOrder.LITTLE_ENDIAN).getInt(0)
-                val receivedID = buffer.order(ByteOrder.LITTLE_ENDIAN).getInt(4)
-
-                if (receivedType == BEACON_ID) {
-                    return PixelblazeDevice(sender.hostString, receivedID)
-                }
-            }
-        }
-
-        return null
+        awaitClose { discoveryJob.cancel() }
     }
 }
