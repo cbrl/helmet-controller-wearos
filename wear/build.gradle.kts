@@ -43,6 +43,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":core"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
@@ -55,19 +56,12 @@ dependencies {
     implementation(libs.androidx.wear.tooling.preview)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.splashscreen)
-    implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
-    implementation(libs.ktor.client.core)
-    implementation(libs.ktor.client.websockets)
-    implementation(libs.ktor.client.cio) // Or another engine (e.g., OkHttp)
     implementation(libs.colorpicker)
     implementation(libs.androidx.wear)
     implementation(libs.androidx.wear.input)
-    implementation(libs.androidx.datastore.preferences)
-    testImplementation(libs.junit)
-    testImplementation(libs.json)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)

@@ -5,14 +5,17 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.inputmethod.EditorInfo
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -31,9 +34,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -65,6 +71,7 @@ import androidx.wear.input.wearableExtender
 import com.cbrl.pixelblaze.presentation.theme.PixelblazeTheme
 import io.mhssn.colorpicker.ColorPicker
 import io.mhssn.colorpicker.ColorPickerType
+import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.round
@@ -86,13 +93,17 @@ fun NavigationStack(
     val navController = rememberNavController()
     val context = LocalContext.current
     val discovery by deviceViewModel.state.collectAsStateWithLifecycle()
-    var attemptedAutoReconnect by rememberSaveable { mutableStateOf(false) }
+    var openedDeviceKey by rememberSaveable { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(discovery.rememberedDevice, discovery.devices) {
-        if (attemptedAutoReconnect) return@LaunchedEffect
+    LaunchedEffect(discovery.rememberedDevice, discovery.devices, discovery.wifiAvailable) {
         val remembered = discovery.rememberedDevice ?: return@LaunchedEffect
-        val device = discovery.devices[remembered.id] ?: return@LaunchedEffect
-        attemptedAutoReconnect = true
+        if (!discovery.wifiAvailable) return@LaunchedEffect
+        val key = "${remembered.id}@${remembered.address}"
+        if (openedDeviceKey == key) return@LaunchedEffect
+        val device = discovery.devices[remembered.id]
+            ?.takeIf { it.address == remembered.address }
+            ?: PixelblazeDevice(remembered.address, remembered.id)
+        openedDeviceKey = key
         helmetViewModel.open(device)
         navController.navigate("${Screen.SegmentSelect.route}?device=${device.id}")
     }
@@ -107,7 +118,7 @@ fun NavigationStack(
                     )
                 },
                 onDeviceSelected = { device ->
-                    attemptedAutoReconnect = true
+                    openedDeviceKey = "${device.id}@${device.address}"
                     helmetViewModel.open(device)
                     navController.navigate("${Screen.SegmentSelect.route}?device=${device.id}")
                 },
@@ -268,7 +279,8 @@ fun SegmentSelectScreen(
             }
             items(HelmetSegments.entries) { segment ->
                 Chip(
-                    label = { Text(segment.prettyName) },
+                    label = { Text(segment.shortName) },
+                    secondaryLabel = { Text(if (segment.supports2D) "2D effects" else "LED strip") },
                     onClick = { onSegmentSelected(segment) },
                     enabled = connectionState == HelmetConnectionState.Ready,
                     modifier = Modifier.fillMaxWidth(),
@@ -281,7 +293,8 @@ fun SegmentSelectScreen(
 @Composable
 fun HelmetControllerScreen(controllerView: HelmetControllerViewModel) {
     val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
-    val pageCount = if (segment == HelmetSegments.Visor) 5 else 4
+    var editingColor by rememberSaveable(segment) { mutableStateOf(false) }
+    val pageCount = if (segment == HelmetSegments.Visor) 6 else 5
     val pagerState = rememberPagerState(pageCount = { pageCount })
     val pageIndicatorState = remember(pagerState) {
         object : PageIndicatorState {
@@ -292,16 +305,22 @@ fun HelmetControllerScreen(controllerView: HelmetControllerViewModel) {
     }
 
     PixelblazeTheme {
-        HorizontalPager(state = pagerState) { page ->
-            when (page) {
-                0 -> EffectSelector(controllerView)
-                1 -> HelmetBrightnessControl(controllerView)
-                2 -> HelmetColorControl(controllerView)
-                3 -> SegmentOptionsControl(controllerView)
-                4 -> VisorMessageScreen(controllerView)
+        if (editingColor) {
+            BackHandler { editingColor = false }
+            HelmetColorEditor(controllerView, onClose = { editingColor = false })
+        } else {
+            HorizontalPager(state = pagerState) { page ->
+                when (page) {
+                    0 -> EffectSelector(controllerView)
+                    1 -> HelmetBrightnessControl(controllerView)
+                    2 -> HelmetColorSummary(controllerView, onEdit = { editingColor = true })
+                    3 -> SegmentOptionsControl(controllerView)
+                    4 -> WearPresetScreen(controllerView)
+                    5 -> VisorMessageScreen(controllerView)
+                }
             }
+            HorizontalPageIndicator(pageIndicatorState = pageIndicatorState)
         }
-        HorizontalPageIndicator(pageIndicatorState = pageIndicatorState)
     }
 }
 
@@ -313,8 +332,8 @@ fun EffectSelector(controllerView: HelmetControllerViewModel) {
     val scrollState = rememberScalingLazyListState()
 
     ScalingLazyColumn(state = scrollState) {
-        item { Text(segment.prettyName, textAlign = TextAlign.Center) }
-        items(HelmetEffects.availableFor(segment).reversed()) { effect ->
+        item { Text("${segment.shortName} · Effect", textAlign = TextAlign.Center) }
+        items(HelmetEffects.availableFor(segment)) { effect ->
             val select = { controllerView.controller.setSegmentEffect(segment, effect) }
             SplitToggleChip(
                 label = { Text(effect.prettyName, textAlign = TextAlign.Center) },
@@ -335,11 +354,19 @@ fun HelmetBrightnessControl(controllerView: HelmetControllerViewModel) {
     val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
     val deviceBrightness = state?.getSegment(segment)?.getState(SegmentVars.Brightness)?.toFloat() ?: 0f
     var brightness by remember(deviceBrightness, segment) { mutableFloatStateOf(deviceBrightness) }
+    var brightnessChanged by remember(segment) { mutableStateOf(false) }
     val animatedBrightness by animateFloatAsState(
         targetValue = brightness,
         animationSpec = ProgressIndicatorDefaults.ProgressAnimationSpec,
         label = "brightness",
     )
+    LaunchedEffect(brightness, brightnessChanged) {
+        if (brightnessChanged) {
+            delay(180L)
+            controllerView.controller.setSegmentBrightness(segment, brightness)
+            brightnessChanged = false
+        }
+    }
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -350,6 +377,7 @@ fun HelmetBrightnessControl(controllerView: HelmetControllerViewModel) {
                     it.verticalScrollPixels < 0 -> max(brightness - 0.05f, 0f)
                     else -> brightness
                 }
+                brightnessChanged = true
                 true
             }
             .requestFocusOnHierarchyActive()
@@ -362,18 +390,34 @@ fun HelmetBrightnessControl(controllerView: HelmetControllerViewModel) {
             startAngle = 290f,
             endAngle = 250f,
         )
-        Text("%.0f%%".format(round(brightness * 100)), modifier = Modifier.align(Alignment.TopCenter))
+        Text("${segment.shortName} · Brightness", modifier = Modifier.align(Alignment.TopCenter))
+        Text("%.0f%%\nRotate crown".format(round(brightness * 100)), textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+fun HelmetColorSummary(controllerView: HelmetControllerViewModel, onEdit: () -> Unit) {
+    val state by controllerView.controller.state.collectAsStateWithLifecycle()
+    val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
+    val segmentState = state?.getSegment(segment)
+    val hue = (segmentState?.getState(SegmentVars.Hue)?.toFloat() ?: 0f) * 360f
+    val saturation = segmentState?.getState(SegmentVars.Saturation)?.toFloat() ?: 1f
+    val color = Color.hsv(hue, saturation, 1f)
+
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+        Text("${segment.shortName} · Color", modifier = Modifier.align(Alignment.TopCenter))
+        Box(Modifier.size(66.dp).background(color, CircleShape))
         CompactChip(
-            label = { Text("Set brightness") },
-            modifier = Modifier.align(Alignment.Center),
-            onClick = { controllerView.controller.setSegmentBrightness(segment, brightness) },
+            label = { Text("Edit color") },
+            onClick = onEdit,
+            modifier = Modifier.align(Alignment.BottomCenter),
         )
     }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun HelmetColorControl(controllerView: HelmetControllerViewModel) {
+fun HelmetColorEditor(controllerView: HelmetControllerViewModel, onClose: () -> Unit) {
     val state by controllerView.controller.state.collectAsStateWithLifecycle()
     val segment by controllerView.activeSegment.collectAsStateWithLifecycle()
     val segmentState = state?.getSegment(segment)
@@ -381,16 +425,53 @@ fun HelmetColorControl(controllerView: HelmetControllerViewModel) {
     val saturation = segmentState?.getState(SegmentVars.Saturation)?.toFloat() ?: 1f
     var color by remember(hue, saturation, segment) { mutableStateOf(Color.hsv(hue, saturation, 1f)) }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Choose ${segment.shortName} color")
         ColorPicker(
             type = ColorPickerType.Circle(showBrightnessBar = false, showAlphaBar = false),
-            modifier = Modifier.fillMaxSize(0.75f).align(Alignment.CenterHorizontally),
+            modifier = Modifier.size(130.dp),
         ) { color = it }
-        CompactChip(
-            label = { Text("Set color") },
-            onClick = { controllerView.controller.setSegmentColor(segment, color) },
-            modifier = Modifier.align(Alignment.CenterHorizontally),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CompactChip(label = { Text("Cancel") }, onClick = onClose)
+            CompactChip(
+                label = { Text("Apply") },
+                onClick = {
+                    controllerView.controller.setSegmentColor(segment, color)
+                    onClose()
+                },
+            )
+        }
+    }
+}
+
+@Composable
+fun WearPresetScreen(controllerView: HelmetControllerViewModel) {
+    val presets by controllerView.presets.collectAsStateWithLifecycle()
+    val scrollState = rememberScalingLazyListState()
+
+    ScalingLazyColumn(state = scrollState) {
+        item { Text("Full helmet presets", textAlign = TextAlign.Center) }
+        item {
+            UserInputBox(
+                text = "Save current",
+                inputLabel = "Preset name",
+                onInput = controllerView::savePreset,
+            )
+        }
+        if (presets.isEmpty()) {
+            item { Text("No presets saved", textAlign = TextAlign.Center) }
+        }
+        items(presets) { preset ->
+            val effect = HelmetEffects.fromId(
+                preset.state.getSegment(HelmetSegments.Visor).getState(SegmentVars.Effect).toInt(),
+            )?.prettyName ?: "Custom"
+            Chip(
+                label = { Text(preset.name) },
+                secondaryLabel = { Text("Load · $effect") },
+                onClick = { controllerView.loadPreset(preset.id) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
@@ -407,13 +488,18 @@ fun SegmentOptionsControl(controllerView: HelmetControllerViewModel) {
     }
     val enabled = (segmentState?.getState(SegmentVars.Switch) ?: 1.0) >= 0.5
     val scrollState = rememberScalingLazyListState()
+    val haptics = LocalHapticFeedback.current
 
     ScalingLazyColumn(state = scrollState) {
+        item { Text("${segment.shortName} · Options", textAlign = TextAlign.Center) }
         if (segment == HelmetSegments.Visor) {
             item {
                 Chip(
                     label = { Text("Emergency blackout") },
-                    onClick = { controllerView.controller.setAllSegmentsEnabled(false) },
+                    onClick = {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        controllerView.controller.setAllSegmentsEnabled(false)
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -431,18 +517,22 @@ fun SegmentOptionsControl(controllerView: HelmetControllerViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        item { ValueStepper("Speed", speed, 0.05f, 10f, 0.1f) { speed = it } }
         item {
-            CompactChip(
-                label = { Text("Apply speed") },
-                onClick = { controllerView.controller.setSegmentSpeed(segment, speed) },
-            )
+            ValueStepper("Speed", speed, 0.05f, 10f, 0.1f) {
+                speed = it
+                controllerView.controller.setSegmentSpeed(segment, it)
+            }
         }
-        item { ValueStepper("Fade seconds", fade, 0f, 30f, 0.25f) { fade = it } }
+        item {
+            ValueStepper("Fade seconds", fade, 0f, 30f, 0.25f) {
+                fade = it
+                controllerView.controller.setSegmentFadeTime(segment, it)
+            }
+        }
         item {
             CompactChip(
-                label = { Text("Apply fade") },
-                onClick = { controllerView.controller.setSegmentFadeTime(segment, fade) },
+                label = { Text("Copy look to all") },
+                onClick = { controllerView.controller.copyAppearanceToAll(segment) },
             )
         }
     }
@@ -468,12 +558,13 @@ private fun ValueStepper(
 fun UserInputBox(
     modifier: Modifier = Modifier,
     text: String = "",
+    inputLabel: String = "Helmet message",
     onInput: (String) -> Unit,
 ) {
     val inputTextKey = "input_text"
     val remoteInputs = listOf(
         RemoteInput.Builder(inputTextKey)
-            .setLabel("Helmet message")
+            .setLabel(inputLabel)
             .wearableExtender {
                 setEmojisAllowed(false)
                 setInputActionType(EditorInfo.IME_ACTION_DONE)

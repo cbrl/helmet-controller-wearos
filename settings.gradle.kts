@@ -23,4 +23,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Pixelblaze"
+include(":core")
+include(":mobile")
 include(":wear")
