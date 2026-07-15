@@ -23,6 +23,8 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,7 +34,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Color
@@ -61,6 +62,7 @@ import androidx.wear.compose.material.CompactButton
 import androidx.wear.compose.material.CompactChip
 import androidx.wear.compose.material.HorizontalPageIndicator
 import androidx.wear.compose.material.Icon
+import androidx.wear.compose.material.InlineSlider
 import androidx.wear.compose.material.PageIndicatorState
 import androidx.wear.compose.material.ProgressIndicatorDefaults
 import androidx.wear.compose.material.RadioButton
@@ -69,12 +71,11 @@ import androidx.wear.compose.material.Text
 import androidx.wear.input.RemoteInputIntentHelper
 import androidx.wear.input.wearableExtender
 import com.cbrl.pixelblaze.presentation.theme.PixelblazeTheme
-import io.mhssn.colorpicker.ColorPicker
-import io.mhssn.colorpicker.ColorPickerType
 import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.round
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -415,7 +416,6 @@ fun HelmetColorSummary(controllerView: HelmetControllerViewModel, onEdit: () -> 
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun HelmetColorEditor(controllerView: HelmetControllerViewModel, onClose: () -> Unit) {
     val state by controllerView.controller.state.collectAsStateWithLifecycle()
@@ -423,23 +423,55 @@ fun HelmetColorEditor(controllerView: HelmetControllerViewModel, onClose: () -> 
     val segmentState = state?.getSegment(segment)
     val hue = (segmentState?.getState(SegmentVars.Hue)?.toFloat() ?: 0f) * 360f
     val saturation = segmentState?.getState(SegmentVars.Saturation)?.toFloat() ?: 1f
-    var color by remember(hue, saturation, segment) { mutableStateOf(Color.hsv(hue, saturation, 1f)) }
+    var selectedHue by remember(hue, segment) { mutableFloatStateOf(hue / 360f) }
+    var selectedSaturation by remember(saturation, segment) { mutableFloatStateOf(saturation) }
+    val color = Color.hsv(selectedHue * 360f, selectedSaturation, 1f)
+    val scrollState = rememberScalingLazyListState()
 
-    Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text("Choose ${segment.shortName} color")
-        ColorPicker(
-            type = ColorPickerType.Circle(showBrightnessBar = false, showAlphaBar = false),
-            modifier = Modifier.size(130.dp),
-        ) { color = it }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            CompactChip(label = { Text("Cancel") }, onClick = onClose)
-            CompactChip(
-                label = { Text("Apply") },
-                onClick = {
-                    controllerView.controller.setSegmentColor(segment, color)
-                    onClose()
-                },
+    ScalingLazyColumn(state = scrollState) {
+        item { Text("Choose ${segment.shortName} color", textAlign = TextAlign.Center) }
+        item { Box(Modifier.size(58.dp).background(color, CircleShape)) }
+        item { Text("Hue ${(selectedHue * 360f).roundToInt()}°") }
+        item {
+            InlineSlider(
+                value = selectedHue,
+                onValueChange = { selectedHue = it },
+                steps = 35,
+                valueRange = 0f..1f,
+                segmented = false,
+                decreaseIcon = { Icon(Icons.Filled.Remove, "Decrease hue") },
+                increaseIcon = { Icon(Icons.Filled.Add, "Increase hue") },
             )
+        }
+        item { Text("Saturation ${(selectedSaturation * 100f).roundToInt()}%") }
+        item {
+            InlineSlider(
+                value = selectedSaturation,
+                onValueChange = { selectedSaturation = it },
+                steps = 19,
+                valueRange = 0f..1f,
+                segmented = false,
+                decreaseIcon = { Icon(Icons.Filled.Remove, "Decrease saturation") },
+                increaseIcon = { Icon(Icons.Filled.Add, "Increase saturation") },
+            )
+        }
+        item {
+            CompactChip(
+                label = { Text("Full saturation") },
+                onClick = { selectedSaturation = 1f },
+            )
+        }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CompactChip(label = { Text("Cancel") }, onClick = onClose)
+                CompactChip(
+                    label = { Text("Apply") },
+                    onClick = {
+                        controllerView.controller.setSegmentColor(segment, color)
+                        onClose()
+                    },
+                )
+            }
         }
     }
 }

@@ -59,7 +59,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
-    implementation(libs.colorpicker)
     implementation(libs.androidx.wear)
     implementation(libs.androidx.wear.input)
     androidTestImplementation(platform(libs.androidx.compose.bom))

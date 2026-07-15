@@ -83,7 +83,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -111,8 +110,6 @@ import com.cbrl.pixelblaze.presentation.PixelblazeDeviceViewModel
 import com.cbrl.pixelblaze.presentation.SegmentState
 import com.cbrl.pixelblaze.presentation.SegmentVars
 import com.cbrl.pixelblaze.ui.theme.PixelblazePhoneTheme
-import io.mhssn.colorpicker.ColorPicker
-import io.mhssn.colorpicker.ColorPickerType
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -433,13 +430,13 @@ private fun SegmentControlCard(
     val stateBrightness = state?.getState(SegmentVars.Brightness)?.toFloat() ?: 1f
     val stateSpeed = state?.getState(SegmentVars.Speed)?.toFloat() ?: 1f
     val stateFade = state?.getState(SegmentVars.FTime)?.toFloat() ?: 0f
-    var selectedColor by remember(segment, stateHue, stateSaturation) {
-        mutableStateOf(Color.hsv(stateHue * 360f, stateSaturation, 1f))
-    }
+    var selectedHue by remember(segment, stateHue) { mutableFloatStateOf(stateHue) }
+    var selectedSaturation by remember(segment, stateSaturation) { mutableFloatStateOf(stateSaturation) }
     var brightness by remember(segment, stateBrightness) { mutableFloatStateOf(stateBrightness) }
     var speed by remember(segment, stateSpeed) { mutableFloatStateOf(stateSpeed) }
     var fade by remember(segment, stateFade) { mutableFloatStateOf(stateFade) }
-    val preview = selectedColor.copy(alpha = brightness.coerceAtLeast(0.15f))
+    val selectedColor = Color.hsv(selectedHue * 360f, selectedSaturation, 1f)
+    val preview = Color.hsv(selectedHue * 360f, selectedSaturation, brightness.coerceAtLeast(0.15f))
 
     Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -463,9 +460,11 @@ private fun SegmentControlCard(
             LabeledSlider("Brightness", "${(brightness * 100).roundToInt()}%", brightness, 0f..1f, controlsEnabled,
                 { brightness = it }, { controller.setSegmentBrightness(segment, brightness) })
             PhoneColorSelector(
-                color = selectedColor,
+                hue = selectedHue,
+                saturation = selectedSaturation,
                 enabled = controlsEnabled,
-                onColorChanged = { selectedColor = it },
+                onHueChanged = { selectedHue = it },
+                onSaturationChanged = { selectedSaturation = it },
                 onApply = { controller.setSegmentColor(segment, selectedColor) },
             )
             LabeledSlider("Animation speed", String.format(Locale.US, "%.2fx", speed), speed, 0.05f..10f, controlsEnabled,
@@ -488,31 +487,58 @@ private fun SegmentControlCard(
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun PhoneColorSelector(
-    color: Color,
+    hue: Float,
+    saturation: Float,
     enabled: Boolean,
-    onColorChanged: (Color) -> Unit,
+    onHueChanged: (Float) -> Unit,
+    onSaturationChanged: (Float) -> Unit,
     onApply: () -> Unit,
 ) {
+    val color = Color.hsv(hue * 360f, saturation, 1f)
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Color", style = MaterialTheme.typography.titleSmall)
-                Text("Drag within the wheel", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Result at full brightness", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Box(
-                Modifier.size(34.dp).clip(CircleShape).background(color)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape),
+                Modifier.size(34.dp).clip(CircleShape).background(color).border(1.dp, MaterialTheme.colorScheme.outline, CircleShape),
             )
         }
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            ColorPicker(
-                type = ColorPickerType.Circle(showBrightnessBar = false, showAlphaBar = false),
-                modifier = Modifier.size(238.dp),
-                onPickedColor = onColorChanged,
-            )
+        Box(
+            Modifier.fillMaxWidth().height(78.dp).clip(RoundedCornerShape(18.dp))
+                .background(color).border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp)),
+        )
+        LabeledSlider(
+            label = "Hue",
+            valueLabel = "${(hue * 360f).roundToInt()}°",
+            value = hue,
+            range = 0f..1f,
+            enabled = enabled,
+            onValueChange = onHueChanged,
+            onFinished = {},
+        )
+        LabeledSlider(
+            label = "Saturation",
+            valueLabel = "${(saturation * 100f).roundToInt()}%",
+            value = saturation,
+            range = 0f..1f,
+            enabled = enabled,
+            onValueChange = onSaturationChanged,
+            onFinished = {},
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(1f to "100%", 0.95f to "95%", 0.9f to "90%").forEach { (value, label) ->
+                FilterChip(
+                    selected = kotlin.math.abs(saturation - value) < 0.005f,
+                    onClick = { onSaturationChanged(value) },
+                    enabled = enabled,
+                    label = { Text(label) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
         FilledTonalButton(
             onClick = onApply,
