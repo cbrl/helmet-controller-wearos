@@ -28,6 +28,8 @@ class HelmetViewModel(
     val presets: StateFlow<List<HelmetPreset>> = repository.presets
     val status: StateFlow<PixelblazeStatus?> = repository.status
     val previewFrames: SharedFlow<ByteArray> = repository.previewFrames
+    val waitingAction: StateFlow<HelmetAction?> = repository.waitingAction
+    val actionResult: StateFlow<ActionResult?> = repository.actionResult
 
     private val _activeSegment = MutableStateFlow(
         HelmetSegment.fromId(savedStateHandle[KEY_ACTIVE_SEGMENT] ?: 0) ?: HelmetSegment.Visor,
@@ -60,6 +62,10 @@ class HelmetViewModel(
     fun restorePreset(id: String) = repository.restorePreset(id)
 
     fun loadPreset(id: String) = repository.loadPreset(id)
+
+    fun runWhenReady(action: HelmetAction) = repository.runWhenReady(action)
+
+    fun clearActionResult() = repository.clearActionResult()
 
     fun acquirePreview() {
         previewHolds++

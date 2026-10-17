@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Helmet Control</string>
+    <string name="tile_label">Helmet</string>
+    <string name="tile_description">Blackout and your newest presets</string>
 </resources>

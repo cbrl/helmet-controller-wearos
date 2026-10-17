@@ -131,6 +131,18 @@ class HelmetRepository private constructor(context: Context) {
     /** RGB bytes for each pixel, while at least one screen holds the preview (see [acquirePreview]). */
     val previewFrames: SharedFlow<ByteArray> = _previewFrames
 
+    private val actionQueue = ActionQueue(
+        scope = scope,
+        ready = connection.map { it == HelmetConnectionState.Ready },
+        perform = ::perform,
+    )
+
+    /** The action that waits for the helmet (see [runWhenReady]), or null. */
+    val waitingAction: StateFlow<HelmetAction?> = actionQueue.waiting
+
+    /** The result of the last [runWhenReady] action, until [clearActionResult]. */
+    val actionResult: StateFlow<ActionResult?> = actionQueue.result
+
     private val previewUsers = MutableStateFlow(0)
     private val retryRequests = MutableStateFlow(0)
     private val lastSeen = mutableMapOf<Int, Long>()
@@ -227,6 +239,30 @@ class HelmetRepository private constructor(context: Context) {
     fun loadPreset(id: String) {
         val preset = presets.value.firstOrNull { it.id == id } ?: return
         controller.applyLook(preset.look)
+    }
+
+    /**
+     * Runs [action] when the helmet is ready, for example after the watch tile opens the app.
+     * The action fails after [ActionQueue.TIMEOUT_MILLIS].
+     */
+    fun runWhenReady(action: HelmetAction) = actionQueue.submit(action)
+
+    fun clearActionResult() = actionQueue.clearResult()
+
+    private fun perform(action: HelmetAction): ActionResult = when (action) {
+        is HelmetAction.SetBlackout -> {
+            controller.setBlackout(action.enabled)
+            ActionResult(action, success = true, message = if (action.enabled) "Blackout on" else "Lights on")
+        }
+        is HelmetAction.LoadPreset -> {
+            val preset = presets.value.firstOrNull { it.id == action.id }
+            if (preset == null) {
+                ActionResult(action, success = false, message = "Preset missing")
+            } else {
+                controller.applyLook(preset.look)
+                ActionResult(action, success = true, message = "Preset loaded")
+            }
+        }
     }
 
     /** Asks the Pixelblaze for preview frames. Call [releasePreview] when the screen stops showing them. */
