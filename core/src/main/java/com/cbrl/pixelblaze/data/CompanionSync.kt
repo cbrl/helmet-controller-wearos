@@ -1,7 +1,12 @@
-package com.cbrl.pixelblaze.presentation
+package com.cbrl.pixelblaze.data
 
 import android.annotation.SuppressLint
 import android.content.Context
+import com.cbrl.pixelblaze.device.PixelblazeEndpoint
+import com.cbrl.pixelblaze.helmet.HelmetPreset
+import com.cbrl.pixelblaze.helmet.HelmetPresets
+import com.cbrl.pixelblaze.helmet.HelmetProtocol
+import com.cbrl.pixelblaze.helmet.HelmetState
 import com.google.android.gms.wearable.DataClient
 import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataMap
@@ -14,7 +19,13 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.mapNotNull
 import java.util.UUID
 
-/** Persistent, last-value synchronization between the phone and its paired Wear OS app. */
+/**
+ * Last-value sync between the phone and its paired Wear OS app.
+ *
+ * Each item carries the time of the change. The receiver keeps the newer value (device, state) or
+ * merges by preset (presets). The receiver never writes a synced state to a live helmet: an app
+ * that is connected to the helmet reads the helmet itself.
+ */
 @SuppressLint("UseKtx")
 class CompanionSync(context: Context) {
     private companion object {
@@ -27,6 +38,7 @@ class CompanionSync(context: Context) {
         const val KEY_DEVICE_ADDRESS = "device_address"
         const val KEY_STATE = "state"
         const val KEY_PRESETS = "presets"
+        const val NO_DEVICE = Int.MIN_VALUE
     }
 
     private val appContext = context.applicationContext
@@ -39,36 +51,40 @@ class CompanionSync(context: Context) {
             }
         }
 
-    val deviceUpdates: Flow<SavedPixelblaze> = dataMaps(DEVICE_PATH).mapNotNull { map ->
-        val id = map.getInt(KEY_DEVICE_ID, Int.MIN_VALUE)
+    /** The device that the other app selected. A null value means that it forgot its device. */
+    val deviceUpdates: Flow<Timestamped<PixelblazeEndpoint?>> = dataMaps(DEVICE_PATH).mapNotNull { map ->
+        val id = map.getInt(KEY_DEVICE_ID, NO_DEVICE)
         val address = map.getString(KEY_DEVICE_ADDRESS, "")
-        if (id == Int.MIN_VALUE || address.isBlank()) null else SavedPixelblaze(id, address)
+        val endpoint = if (id == NO_DEVICE || address.isBlank()) null else PixelblazeEndpoint(id, address)
+        Timestamped(endpoint, map.getLong(KEY_TIMESTAMP, 0L))
     }
 
-    val stateUpdates: Flow<HelmetState> = dataMaps(STATE_PATH).mapNotNull { map ->
-        HelmetState.fromPersistedJson(map.getString(KEY_STATE, ""))
+    val stateUpdates: Flow<Timestamped<HelmetState>> = dataMaps(STATE_PATH).mapNotNull { map ->
+        HelmetProtocol.stateFromJson(map.getString(KEY_STATE, ""))
+            ?.let { Timestamped(it, map.getLong(KEY_TIMESTAMP, 0L)) }
     }
 
+    /** The other app's presets, including tombstones. */
     val presetUpdates: Flow<List<HelmetPreset>> = dataMaps(PRESETS_PATH).mapNotNull { map ->
-        map.getString(KEY_PRESETS, "").takeIf(String::isNotBlank)?.let(HelmetPreset::listFromJSON)
+        map.getString(KEY_PRESETS, "").takeIf(String::isNotBlank)?.let(HelmetPresets::fromJson)
     }
 
-    fun publishDevice(device: SavedPixelblaze) {
-        publish(DEVICE_PATH) {
-            putInt(KEY_DEVICE_ID, device.id)
-            putString(KEY_DEVICE_ADDRESS, device.address)
+    fun publishDevice(endpoint: PixelblazeEndpoint?, updatedAt: Long) {
+        publish(DEVICE_PATH, updatedAt) {
+            putInt(KEY_DEVICE_ID, endpoint?.id ?: NO_DEVICE)
+            putString(KEY_DEVICE_ADDRESS, endpoint?.address.orEmpty())
         }
     }
 
-    fun publishState(state: HelmetState) {
-        publish(STATE_PATH) {
-            putString(KEY_STATE, state.toJSON().toString())
+    fun publishState(state: HelmetState, updatedAt: Long) {
+        publish(STATE_PATH, updatedAt) {
+            putString(KEY_STATE, HelmetProtocol.stateToJson(state).toString())
         }
     }
 
     fun publishPresets(presets: List<HelmetPreset>) {
-        publish(PRESETS_PATH) {
-            putString(KEY_PRESETS, HelmetPreset.listToJSON(presets).toString())
+        publish(PRESETS_PATH, System.currentTimeMillis()) {
+            putString(KEY_PRESETS, HelmetPresets.toJson(presets).toString())
         }
     }
 
@@ -103,11 +119,11 @@ class CompanionSync(context: Context) {
         awaitClose { runCatching { dataClient.removeListener(listener) } }
     }
 
-    private fun publish(path: String, values: DataMap.() -> Unit) {
+    private fun publish(path: String, updatedAt: Long, values: DataMap.() -> Unit) {
         runCatching {
             val request = PutDataMapRequest.create(path).apply {
                 dataMap.putString(KEY_SOURCE, sourceId)
-                dataMap.putLong(KEY_TIMESTAMP, System.currentTimeMillis())
+                dataMap.putLong(KEY_TIMESTAMP, updatedAt)
                 dataMap.apply(values)
             }.asPutDataRequest().setUrgent()
             dataClient.putDataItem(request)

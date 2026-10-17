@@ -75,7 +75,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -96,19 +95,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.cbrl.pixelblaze.presentation.DeviceDiscoveryState
-import com.cbrl.pixelblaze.presentation.HelmetConnectionState
-import com.cbrl.pixelblaze.presentation.HelmetController
-import com.cbrl.pixelblaze.presentation.HelmetControllerViewModel
-import com.cbrl.pixelblaze.presentation.HelmetEffects
-import com.cbrl.pixelblaze.presentation.HelmetPreset
-import com.cbrl.pixelblaze.presentation.HelmetSegments
-import com.cbrl.pixelblaze.presentation.HelmetState
-import com.cbrl.pixelblaze.presentation.MessageState
-import com.cbrl.pixelblaze.presentation.PixelblazeDevice
-import com.cbrl.pixelblaze.presentation.PixelblazeDeviceViewModel
-import com.cbrl.pixelblaze.presentation.SegmentState
-import com.cbrl.pixelblaze.presentation.SegmentVars
+import com.cbrl.pixelblaze.device.PixelblazeEndpoint
+import com.cbrl.pixelblaze.helmet.DiscoveryState
+import com.cbrl.pixelblaze.helmet.HelmetConnectionState
+import com.cbrl.pixelblaze.helmet.HelmetController
+import com.cbrl.pixelblaze.helmet.HelmetEffect
+import com.cbrl.pixelblaze.helmet.HelmetLayout
+import com.cbrl.pixelblaze.helmet.HelmetMessage
+import com.cbrl.pixelblaze.helmet.HelmetPreset
+import com.cbrl.pixelblaze.helmet.HelmetPresets
+import com.cbrl.pixelblaze.helmet.HelmetSegment
+import com.cbrl.pixelblaze.helmet.HelmetState
+import com.cbrl.pixelblaze.helmet.HelmetViewModel
+import com.cbrl.pixelblaze.helmet.SegmentState
 import com.cbrl.pixelblaze.ui.theme.PixelblazePhoneTheme
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -130,26 +129,15 @@ private enum class PhoneDestination(val label: String, val icon: ImageVector) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PixelblazePhoneApp(
-    deviceViewModel: PixelblazeDeviceViewModel = viewModel(),
-    helmetViewModel: HelmetControllerViewModel = viewModel(),
-) {
-    val discovery by deviceViewModel.state.collectAsStateWithLifecycle()
-    val connection by helmetViewModel.connectionState.collectAsStateWithLifecycle()
-    val helmetState by helmetViewModel.controller.state.collectAsStateWithLifecycle()
+private fun PixelblazePhoneApp(helmetViewModel: HelmetViewModel = viewModel()) {
+    val discovery by helmetViewModel.discovery.collectAsStateWithLifecycle()
+    val selectedDevice by helmetViewModel.selectedDevice.collectAsStateWithLifecycle()
+    val connection by helmetViewModel.connection.collectAsStateWithLifecycle()
+    val helmetState by helmetViewModel.state.collectAsStateWithLifecycle()
+    val layout by helmetViewModel.layout.collectAsStateWithLifecycle()
     val segment by helmetViewModel.activeSegment.collectAsStateWithLifecycle()
     val presets by helmetViewModel.presets.collectAsStateWithLifecycle()
     var destination by rememberSaveable { mutableStateOf(PhoneDestination.Control) }
-    var openedDevice by remember { mutableStateOf<Pair<Int, String>?>(null) }
-
-    LaunchedEffect(discovery.wifiAvailable, discovery.rememberedDevice) {
-        val remembered = discovery.rememberedDevice ?: return@LaunchedEffect
-        val key = remembered.id to remembered.address
-        if (discovery.wifiAvailable && openedDevice != key) {
-            openedDevice = key
-            helmetViewModel.open(PixelblazeDevice(remembered.address, remembered.id))
-        }
-    }
 
     val background = Brush.verticalGradient(
         listOf(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.surfaceContainerLowest),
@@ -162,7 +150,7 @@ private fun PixelblazePhoneApp(
                     Column {
                         Text("HELMET CONTROL", fontWeight = FontWeight.Black)
                         Text(
-                            discovery.rememberedDevice?.address ?: "No Pixelblaze selected",
+                            selectedDevice?.address ?: "No Pixelblaze selected",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -204,6 +192,7 @@ private fun PixelblazePhoneApp(
                     PhoneDestination.Effects -> EffectsScreen(
                         connection = connection,
                         state = helmetState,
+                        layout = layout,
                         segment = segment,
                         controller = helmetViewModel.controller,
                         onSegmentSelected = helmetViewModel::selectSegment,
@@ -219,10 +208,9 @@ private fun PixelblazePhoneApp(
                     )
                     PhoneDestination.Devices -> DeviceScreen(
                         discovery = discovery,
-                        selected = discovery.rememberedDevice?.let { it.id to it.address },
+                        selected = selectedDevice,
                         onDeviceSelected = { device ->
-                            openedDevice = device.id to device.address
-                            helmetViewModel.open(device)
+                            helmetViewModel.selectDevice(device)
                             destination = PhoneDestination.Control
                         },
                     )
@@ -249,27 +237,27 @@ private fun ConnectionIcon(connection: HelmetConnectionState) {
 private fun ControlScreen(
     connection: HelmetConnectionState,
     state: HelmetState?,
-    segment: HelmetSegments,
+    segment: HelmetSegment,
     controller: HelmetController,
-    onSegmentSelected: (HelmetSegments) -> Unit,
+    onSegmentSelected: (HelmetSegment) -> Unit,
     onRetry: () -> Unit,
     onChooseDevice: () -> Unit,
 ) {
     val enabled = connection == HelmetConnectionState.Ready
-    val segmentState = state?.getSegment(segment)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item { ConnectionBanner(connection, onRetry, onChooseDevice) }
-        item { MasterControls(controller, enabled) }
+        item { MasterControls(controller, state, enabled) }
         item { SegmentPicker(segment, onSegmentSelected) }
         item {
             AnimatedContent(targetState = segment, label = "segment controls") {
                 SegmentControlCard(
                     segment = it,
-                    state = segmentState,
+                    state = state?.get(it),
+                    message = state?.message.orEmpty(),
                     controller = controller,
                     controlsEnabled = enabled,
                 )
@@ -347,7 +335,7 @@ private fun ConnectionBanner(
 }
 
 @Composable
-private fun MasterControls(controller: HelmetController, enabled: Boolean) {
+private fun MasterControls(controller: HelmetController, state: HelmetState?, enabled: Boolean) {
     val haptics = LocalHapticFeedback.current
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -359,7 +347,7 @@ private fun MasterControls(controller: HelmetController, enabled: Boolean) {
                 Button(
                     onClick = {
                         haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                        controller.setAllSegmentsEnabled(false)
+                        controller.setBlackout(true)
                     },
                     enabled = enabled,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
@@ -370,23 +358,23 @@ private fun MasterControls(controller: HelmetController, enabled: Boolean) {
                     Text("Blackout")
                 }
                 FilledTonalButton(
-                    onClick = { controller.setAllSegmentsEnabled(true) },
+                    onClick = { controller.setBlackout(false) },
                     enabled = enabled,
                     modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.Filled.LightMode, null)
                     Spacer(Modifier.width(8.dp))
-                    Text("All on")
+                    Text("Lights on")
                 }
             }
-            MasterBrightness(enabled, controller::setAllSegmentsBrightness)
+            MasterBrightness(state?.master ?: 1f, enabled, controller::setMaster)
         }
     }
 }
 
 @Composable
-private fun MasterBrightness(enabled: Boolean, onApply: (Float) -> Unit) {
-    var brightness by rememberSaveable { mutableFloatStateOf(1f) }
+private fun MasterBrightness(master: Float, enabled: Boolean, onApply: (Float) -> Unit) {
+    var brightness by remember(master) { mutableFloatStateOf(master) }
     LabeledSlider(
         label = "Master brightness",
         valueLabel = "${(brightness * 100).roundToInt()}%",
@@ -399,15 +387,15 @@ private fun MasterBrightness(enabled: Boolean, onApply: (Float) -> Unit) {
 }
 
 @Composable
-private fun SegmentPicker(selected: HelmetSegments, onSelected: (HelmetSegments) -> Unit) {
+private fun SegmentPicker(selected: HelmetSegment, onSelected: (HelmetSegment) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("SEGMENT", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(HelmetSegments.entries) { segment ->
+            items(HelmetSegment.entries) { segment ->
                 FilterChip(
                     selected = segment == selected,
                     onClick = { onSelected(segment) },
-                    label = { Text(segment.shortName) },
+                    label = { Text(segment.shortLabel) },
                     leadingIcon = if (segment == selected) {
                         { Icon(Icons.Filled.Check, null, Modifier.size(18.dp)) }
                     } else null,
@@ -419,23 +407,23 @@ private fun SegmentPicker(selected: HelmetSegments, onSelected: (HelmetSegments)
 
 @Composable
 private fun SegmentControlCard(
-    segment: HelmetSegments,
+    segment: HelmetSegment,
     state: SegmentState?,
+    message: String,
     controller: HelmetController,
     controlsEnabled: Boolean,
 ) {
-    val segmentEnabled = (state?.getState(SegmentVars.Switch) ?: 0.0) >= 0.5
-    val stateHue = state?.getState(SegmentVars.Hue)?.toFloat() ?: 0f
-    val stateSaturation = state?.getState(SegmentVars.Saturation)?.toFloat() ?: 1f
-    val stateBrightness = state?.getState(SegmentVars.Brightness)?.toFloat() ?: 1f
-    val stateSpeed = state?.getState(SegmentVars.Speed)?.toFloat() ?: 1f
-    val stateFade = state?.getState(SegmentVars.FTime)?.toFloat() ?: 0f
+    val segmentEnabled = state?.on ?: false
+    val stateHue = state?.hue ?: 0f
+    val stateSaturation = state?.saturation ?: 1f
+    val stateBrightness = state?.brightness ?: 1f
+    val stateSpeed = state?.speed ?: 1f
+    val stateFade = state?.fadeSeconds ?: 0f
     var selectedHue by remember(segment, stateHue) { mutableFloatStateOf(stateHue) }
     var selectedSaturation by remember(segment, stateSaturation) { mutableFloatStateOf(stateSaturation) }
     var brightness by remember(segment, stateBrightness) { mutableFloatStateOf(stateBrightness) }
     var speed by remember(segment, stateSpeed) { mutableFloatStateOf(stateSpeed) }
     var fade by remember(segment, stateFade) { mutableFloatStateOf(stateFade) }
-    val selectedColor = Color.hsv(selectedHue * 360f, selectedSaturation, 1f)
     val preview = Color.hsv(selectedHue * 360f, selectedSaturation, brightness.coerceAtLeast(0.15f))
 
     Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
@@ -447,7 +435,7 @@ private fun SegmentControlCard(
                 )
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(segment.prettyName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(segment.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(if (segmentEnabled) "Output enabled" else "Output disabled", style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(
@@ -465,7 +453,7 @@ private fun SegmentControlCard(
                 enabled = controlsEnabled,
                 onHueChanged = { selectedHue = it },
                 onSaturationChanged = { selectedSaturation = it },
-                onApply = { controller.setSegmentColor(segment, selectedColor) },
+                onApply = { controller.setSegmentColor(segment, selectedHue, selectedSaturation) },
             )
             LabeledSlider("Animation speed", String.format(Locale.US, "%.2fx", speed), speed, 0.05f..10f, controlsEnabled,
                 { speed = it }, { controller.setSegmentSpeed(segment, speed) })
@@ -476,11 +464,11 @@ private fun SegmentControlCard(
                 enabled = controlsEnabled,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Copy this look to all segments") }
-            AnimatedVisibility(segment == HelmetSegments.Visor) {
+            AnimatedVisibility(segment == HelmetSegment.Visor) {
                 MessageControl(
-                    initialMessage = stateForMessage(controller),
+                    initialMessage = message,
                     enabled = controlsEnabled,
-                    onApply = controller::setMessageText,
+                    onApply = controller::setMessage,
                 )
             }
         }
@@ -549,10 +537,6 @@ private fun PhoneColorSelector(
 }
 
 @Composable
-private fun stateForMessage(controller: HelmetController): String =
-    controller.state.collectAsStateWithLifecycle().value?.getMessage()?.value.orEmpty()
-
-@Composable
 private fun MessageControl(initialMessage: String, enabled: Boolean, onApply: (String) -> Unit) {
     var message by remember(initialMessage) { mutableStateOf(initialMessage) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -560,10 +544,10 @@ private fun MessageControl(initialMessage: String, enabled: Boolean, onApply: (S
         Text("Scrolling message", style = MaterialTheme.typography.titleSmall)
         OutlinedTextField(
             value = message,
-            onValueChange = { message = MessageState.sanitize(it) },
+            onValueChange = { message = HelmetMessage.sanitize(it) },
             enabled = enabled,
             modifier = Modifier.fillMaxWidth(),
-            supportingText = { Text("${message.length}/${MessageState.MAX_LENGTH} · printable ASCII") },
+            supportingText = { Text("${message.length}/${HelmetMessage.MAX_LENGTH} · printable ASCII") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { onApply(message) }),
@@ -597,11 +581,12 @@ private fun LabeledSlider(
 private fun EffectsScreen(
     connection: HelmetConnectionState,
     state: HelmetState?,
-    segment: HelmetSegments,
+    layout: HelmetLayout,
+    segment: HelmetSegment,
     controller: HelmetController,
-    onSegmentSelected: (HelmetSegments) -> Unit,
+    onSegmentSelected: (HelmetSegment) -> Unit,
 ) {
-    val selectedEffect = state?.getSegment(segment)?.getState(SegmentVars.Effect)?.toInt()
+    val selectedEffect = state?.get(segment)?.effect?.id
     Column(Modifier.fillMaxSize().padding(top = 12.dp)) {
         Box(Modifier.padding(horizontal = 16.dp)) { SegmentPicker(segment, onSegmentSelected) }
         Text(
@@ -616,7 +601,7 @@ private fun EffectsScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(HelmetEffects.availableFor(segment), key = { it.id }) { effect ->
+            items(HelmetEffect.availableFor(segment, layout), key = { it.id }) { effect ->
                 EffectCard(
                     effect = effect,
                     selected = selectedEffect == effect.id,
@@ -629,7 +614,7 @@ private fun EffectsScreen(
 }
 
 @Composable
-private fun EffectCard(effect: HelmetEffects, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+private fun EffectCard(effect: HelmetEffect, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         enabled = enabled,
@@ -643,7 +628,7 @@ private fun EffectCard(effect: HelmetEffects, selected: Boolean, enabled: Boolea
                 Icon(Icons.Filled.AutoAwesome, null, tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary)
                 if (selected) Icon(Icons.Filled.Check, "Selected", tint = MaterialTheme.colorScheme.primary)
             }
-            Text(effect.prettyName, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(effect.label, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -682,7 +667,7 @@ private fun PresetsScreen(
         item {
             Button(
                 onClick = { creating = true },
-                enabled = hasCurrentState && presets.size < HelmetPreset.MAX_PRESETS,
+                enabled = hasCurrentState && presets.size < HelmetPresets.MAX_PRESETS,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Icon(Icons.Filled.Save, null)
@@ -777,21 +762,15 @@ private fun PresetCard(
     onUpdate: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    val visor = preset.state.getSegment(HelmetSegments.Visor)
-    val effect = HelmetEffects.fromId(visor.getState(SegmentVars.Effect).toInt())?.prettyName ?: "Unknown effect"
-    val activeSegments = HelmetSegments.entries.count {
-        preset.state.getSegment(it).getState(SegmentVars.Switch) >= 0.5
-    }
+    val visor = preset.look[HelmetSegment.Visor]
+    val effect = visor.effect.label
+    val activeSegments = HelmetSegment.entries.count { preset.look[it].on }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier.size(12.dp).clip(CircleShape).background(
-                        Color.hsv(
-                            visor.getState(SegmentVars.Hue).toFloat() * 360f,
-                            visor.getState(SegmentVars.Saturation).toFloat(),
-                            visor.getState(SegmentVars.Brightness).toFloat(),
-                        ),
+                        Color.hsv(visor.hue * 360f, visor.saturation, visor.brightness),
                     ),
                 )
                 Spacer(Modifier.width(10.dp))
@@ -831,16 +810,16 @@ private fun PresetNameDialog(
         text = {
             OutlinedTextField(
                 value = name,
-                onValueChange = { name = it.take(HelmetPreset.MAX_NAME_LENGTH) },
+                onValueChange = { name = it.take(HelmetPresets.MAX_NAME_LENGTH) },
                 label = { Text("Preset name") },
-                supportingText = { Text("${name.length}/${HelmetPreset.MAX_NAME_LENGTH}") },
+                supportingText = { Text("${name.length}/${HelmetPresets.MAX_NAME_LENGTH}") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onConfirm(HelmetPreset.sanitizeName(name)) }),
+                keyboardActions = KeyboardActions(onDone = { onConfirm(HelmetPresets.sanitizeName(name)) }),
             )
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(HelmetPreset.sanitizeName(name)) }) { Text(confirmLabel) }
+            TextButton(onClick = { onConfirm(HelmetPresets.sanitizeName(name)) }) { Text(confirmLabel) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
@@ -870,9 +849,9 @@ private fun ConfirmationDialog(
 
 @Composable
 private fun DeviceScreen(
-    discovery: DeviceDiscoveryState,
-    selected: Pair<Int, String>?,
-    onDeviceSelected: (PixelblazeDevice) -> Unit,
+    discovery: DiscoveryState,
+    selected: PixelblazeEndpoint?,
+    onDeviceSelected: (PixelblazeEndpoint) -> Unit,
 ) {
     val context = LocalContext.current
     LazyColumn(
@@ -883,12 +862,12 @@ private fun DeviceScreen(
         item {
             Text("Pixelblaze devices", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(
-                if (discovery.wifiAvailable) "Listening for discovery beacons on Wi-Fi"
-                else "Connect to the same Wi-Fi network as the helmet",
+                if (discovery.wifiConnected) "Listening for discovery beacons on Wi-Fi"
+                else "No Wi-Fi network. Listening on the hotspot and local network.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (!discovery.wifiAvailable) {
+        if (!discovery.wifiConnected) {
             item {
                 Button(onClick = { context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }) {
                     Icon(Icons.Filled.Wifi, null)
@@ -901,7 +880,7 @@ private fun DeviceScreen(
             item { Text(error, color = MaterialTheme.colorScheme.error) }
         }
         items(discovery.devices.values.sortedBy { it.id }, key = { it.id }) { device ->
-            val isSelected = selected == (device.id to device.address)
+            val isSelected = device.sameDevice(selected)
             Card(
                 onClick = { onDeviceSelected(device) },
                 colors = CardDefaults.cardColors(
@@ -912,14 +891,14 @@ private fun DeviceScreen(
                     Icon(Icons.Filled.SettingsRemote, null, Modifier.size(30.dp))
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("Pixelblaze ${device.id.toUInt().toString(16).uppercase()}", fontWeight = FontWeight.Bold)
+                        Text("Pixelblaze ${device.displayId}", fontWeight = FontWeight.Bold)
                         Text(device.address, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (isSelected) AssistChip(onClick = {}, label = { Text("Selected") })
                 }
             }
         }
-        if (discovery.wifiAvailable && discovery.devices.isEmpty()) {
+        if (discovery.devices.isEmpty()) {
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
                     Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {

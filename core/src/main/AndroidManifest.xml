@@ -1,2 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        The Pixelblaze API is plain ws:// on the local network, and the device has no TLS.
+        OkHttp follows the network security policy, which blocks cleartext traffic by default.
+        The policy cannot list the local addresses in advance, so cleartext is allowed.
+    -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>
