@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+core/build
+mobile/build
+wear/build

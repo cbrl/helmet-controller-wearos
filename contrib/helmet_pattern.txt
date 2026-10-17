@@ -1,0 +1,1503 @@
+/*
+ Multisegment Pattern for Home Automation Systems
+ Divide an LED strip into multiple segments or "zones", each
+ with independent RGB settings and effects. Designed for easy JSON access
+ to allow control from home automation hubs.
+
+ This version of the pattern is made to be controlled via websockets, so
+ it does not support the Pixelblaze Web UI.
+
+ 2020-2022 ZRanger1
+
+ MIT License
+
+ Version Date        Comment
+ 2.0.0    02/02/2021  v2 release
+ 2.0.1    02/03/2021  fixed __state/__switch bug
+ 2.0.2    02/07/2021  fix unable to set color in glitter effect
+ 3.0.0    02/10/2022  v3 release - smooth fades
+*/
+
+// CONSTANTS
+// field indices for segment control array
+var __switch = 0;    // on/off state
+var __hue = 1;       // hue
+var __sat = 2;       // saturation
+var __bri = 3;       // target brightness
+var __effect = 4;    // effect number
+var __size = 5;      // number of pixels in segment
+var __speed = 6;     // effect speed
+var __ftime = 7;     // fade in/out time (seconds, NOT ms)
+var __width = 8;     // width of segment (for 2D patterns)
+var __height = 9;    // height of segment (for 2D patterns)
+
+// dimensions of various data arrays
+var __max_segments = 7;
+var __dataCols = 10;      // columns in segment control array
+var __n_effects = 26;    // number of available effects
+var __n_locals = 3;      // max number of per-segment local variables
+
+// Variables visible to websockets
+export var __ver = 3         // used to identify pattern version
+export var __n_segments = 7; // number of segments (range 1 -__max_segments)
+export var __expected_pixels = 496;
+export var __layout_valid = pixelCount == __expected_pixels;
+
+// GLOBAL VARIABLES
+var segBri = array(__max_segments)
+var fadeStart = array(__max_segments)
+var fadeTarget = array(__max_segments)
+var fadeTime = array(__max_segments)
+
+/*
+ Per segment data array. Twelve arrays are initially configured. The
+ number of active segments is controlled by the variable __n_segments.
+
+ If you need more than 12,define a new "z_nn" array for each new segment,
+ add your new arrays to segTable in the Initialize() function and set the
+ __max_segments and __n_segments variables to reflect the new number of
+ segments you want. That's it - everything else adapts automatically.
+
+ The arrays are coded one per segment to reduce the amount of data that
+ an external program has to track per segment, as well as to
+ reduce the amount json needed to send a command to a single segment.
+*/
+export var z_0 = array(__dataCols);
+export var z_1 = array(__dataCols);
+export var z_2 = array(__dataCols);
+export var z_3 = array(__dataCols);
+export var z_4 = array(__dataCols);
+export var z_5 = array(__dataCols);
+export var z_6 = array(__dataCols);
+//export var z_7 = array(__dataCols);
+//export var z_8 = array(__dataCols);
+//export var z_9 = array(__dataCols);
+//export var z_10 = array(__dataCols);
+//export var z_11 = array(__dataCols);
+
+var segTable = array(__max_segments);
+
+/*
+ Per-segment pixel maps. Each element is a function which should set the value
+ of the global variables mappedX and mappedY.
+
+ By default, every element of this array will be an identity function which sets
+ mappedX to the pixel index and mappedY to 0 (i.e. an unmapped 1D pixel strip).
+*/
+var mappedX;
+var mappedY;
+var segMaps = array(__max_segments);
+
+/*
+ Function tables for effects
+ Each effect requires two functions -- prerender and render
+ the last table entry is reserved for the "off" effect,
+ and cannot be selected by user input.
+*/
+var segPreRender = array(__n_effects)
+var segRender = array(__n_effects);
+
+// current starting pixel index for each segment
+var segStart = array (__max_segments + 1);
+segStart[__max_segments] = 32765; // end of list sentinel - do not change;
+
+// for fast checking during render -- is the segment
+// (1) turned on, (2) of non=zero size, and
+// (3) not pushed off the end by resizing.
+var segEnabled = array(__max_segments);
+
+// per-segment local variable storage, used by effects
+var localStore = array(__n_locals * __max_segments);
+
+// HELPER FUNCTIONS
+
+// slow, smooth exponential fade both up and down
+function SmoothFade(s,e,pct) {
+    var d = e-s;
+
+    if (d >= 0) {
+      d = s + (pct * pct * d)
+    }
+    else {
+     pct = 1-pct
+     d = e - (pct * pct * d)
+    }
+
+    return d
+}
+
+function SetRenderer(n,pre,rend) {
+  segPreRender[n] = pre;
+  segRender[n] = rend;
+}
+
+function GetVar(z,index) {
+  return localStore[(__n_locals * z)+index];
+}
+
+function SetVar(z,index,v) {
+  localStore[(__n_locals * z)+index] = v;
+}
+
+// Set segment size in pixels.  Zero is the minimum size,
+// pixelCount the max.  If you change a segment's size
+// the segments that follow it will be adjusted
+// as well. By definition, the first segment always starts at the
+// first pixel,the last one ends at the last pixel.
+function SetSegSize(z,nPixels,width) {
+  var usedPixels = 0;
+
+  nPixels = clamp(floor(nPixels), 0, pixelCount);
+
+  if (width == null) {
+    width = max(1, nPixels);
+  }
+  width = max(1, floor(width));
+
+  for (var i = 0; i < __n_segments; i++) {
+    var a = segTable[i];
+    if (i == z) {
+      a[__size] = nPixels;
+      a[__width] = width;
+      a[__height] = max(1, floor(nPixels / width));
+    }
+    else {
+      a[__size] = clamp(a[__size], 0, pixelCount - usedPixels);
+    }
+    usedPixels += a[__size];
+  }
+}
+
+function Initialize() {
+  // initialize rendering function table
+  SetRenderer(0, preDefault, renderDefault);
+  SetRenderer(1, preGlitter, renderGlitter);
+  SetRenderer(2, preRBounce, renderRBounce);
+  SetRenderer(3, preKITT, renderKITT);
+  SetRenderer(4, preBreathe, renderBreathe);
+  SetRenderer(5, preSlowColor, renderSlowColor);
+  SetRenderer(6, preSnow, renderSnow);
+  SetRenderer(7, preChaserUp, renderChaser);
+  SetRenderer(8, preChaserDn, renderChaser);
+  SetRenderer(9, preStrobe, renderStrobe);
+  SetRenderer(10, preWipeUp, renderWipe);
+  SetRenderer(11, preWipeDown, renderWipe)
+  SetRenderer(12, preSpringyTheater, renderSpringyTheater);
+  SetRenderer(13, preColorTwinkles, renderColorTwinkles);
+  SetRenderer(14, prePlasma, renderPlasma);
+  SetRenderer(15, preRipples, renderRipples);
+  SetRenderer(16, preSpinCycle, renderSpinCycle);
+  SetRenderer(17, preRainbowUp, renderRainbow);
+  SetRenderer(18, preRainbowDown, renderRainbow);
+  SetRenderer(19, preXorcery, renderXorcery);
+  SetRenderer(20, preScanner, renderScanner);
+  SetRenderer(21, preRenderTunnelSquares, renderTunnelSquares);
+  SetRenderer(22, preRenderLinedancer, renderLinedancer);
+  SetRenderer(23, preEyes, renderEyes);
+  SetRenderer(24, preSnake, renderSnake);
+  SetRenderer(25, preRenderText, renderText);
+
+  // set up table of segment state arrays
+  segTable[0] = z_0;
+  segTable[1] = z_1;
+  segTable[2] = z_2;
+  segTable[3] = z_3;
+  segTable[4] = z_4;
+  segTable[5] = z_5;
+  segTable[6] = z_6;
+  //segTable[7] = z_7;
+  //segTable[8] = z_8;
+  //segTable[9] = z_9;
+  //segTable[10] = z_10;
+  //segTable[11] = z_11;
+
+  // The Home Automation version of this pattern depends on a
+  // controller to save and restore persistent data, so initialization
+  // just sets template values
+  var def_segsize = floor(pixelCount/__max_segments);
+  for (var i = 0; i < __max_segments; i++) {
+    fadeStart[i] = 0;
+    fadeTarget[i] = 0;
+    fadeTime[i] = -1;
+    segBri[i] = 0;
+
+	  segTable[i][__switch] = 1;
+	  segTable[i][__hue] = 0;
+	  segTable[i][__sat] = 1;
+	  segTable[i][__bri] = 0;
+	  segTable[i][__effect] = 0;
+	  segTable[i][__speed] = 1;
+	  segTable[i][__ftime] = 0;
+    SetSegSize(i,def_segsize);
+
+    // Set initial 1D segment maps
+    segMaps[i] = (z,a,index) => { mappedX = index / max(1, a[__width] - 1); mappedY = 0; };
+  }
+
+  SetSegSize(0, 440, 44);  //main visor
+  SetSegSize(1, 10);       //visor side segment 1 (top-bottom numbering)
+  SetSegSize(2, 9);        //visor side segment 2
+  SetSegSize(3, 7);        //visor side segment 3
+  SetSegSize(4, 6);        //visor side segment 4
+  SetSegSize(5, 12);       //left? ear
+  SetSegSize(6, 12);       //right? ear
+
+  segMaps[0] = (z, a, index) => {
+    var width = a[__width];
+    var height = a[__height];
+
+    var y = floor(index / width);
+    var x = index % width;
+    var x = (y % 2 == 1) ? ((width - 1) - x) : x; //zigzag
+
+    mappedX = x / max(1, width - 1);
+    mappedY = y / max(1, height - 1);
+  };
+
+  segTable[0][__bri] = 0.15;
+  segTable[1][__bri] = 1;
+  segTable[2][__bri] = 1;
+  segTable[3][__bri] = 1;
+  segTable[4][__bri] = 1;
+  segTable[5][__bri] = 1;
+  segTable[6][__bri] = 1;
+
+  segTable[0][__effect] = 20;
+  segTable[1][__effect] = 18;
+  segTable[2][__effect] = 18;
+  segTable[3][__effect] = 18;
+  segTable[4][__effect] = 18;
+  segTable[5][__effect] = 17;
+  segTable[6][__effect] = 18;
+
+  setupSnake(segTable[0]);
+  setupText(segTable[0]);
+}
+
+// EFFECTS FUNCTIONS
+// parameters for preXXX(z,a,delta) fns are:
+//   z - seg index
+//   a - ptr to segment data array
+//   delta - ms since last frame
+// parameters for renderXXX(z,a,index,x,y) fns are:
+//   z - seg index
+//   a - ptr to segment data array
+//   index - segment-local 1D pixel index
+//   x - segment-local 2D pixel x value
+//   y - segment-local 2D pixel y value
+// Each effect can use up to __n_locals variables per segment, accessed via the GetVar/SetVar functions.
+
+// EFFECT: default -- all pixels set to current color
+function preDefault(z,a,delta) {
+}
+
+function renderDefault(z,a,index,x,y) {
+  hsv(a[__hue],a[__sat],segBri[z]);
+}
+
+// EFFECT - random pixel "glitter"
+
+// xorshift* -- fast "random enough" PRNG
+var rngState = random(32761)
+function xorShift() {
+  rngState ^= (rngState>>7);
+  rngState ^= (rngState<<9);
+  rngState ^= (rngState>>8)
+  return rngState;
+}
+
+function pRandom(seed) {
+  rngState = seed;
+  return xorShift() / 100 % 1
+}
+
+function preGlitter(z,a,delta) {
+  var delay = delta + GetVar(z,0);
+
+  if (delay > (250 * a[__speed])) {
+    SetVar(z,1,random(32765));
+    delay = 0;
+  }
+
+  SetVar(z,0,delay);
+}
+
+function renderGlitter(z,a,index,x,y) {
+  var b = pRandom(GetVar(z,1) * (index+segStart[z]));
+  hsv(a[__hue], 1-(b*0.03), b*b*b*segBri[z]);
+}
+
+// EFFECT: rainbow bounce
+function preRBounce(z,a,delta) {
+  SetVar(z, 0, wave(time(0.2 * a[__speed])));
+}
+
+function renderRBounce(z,a,index,x,y) {
+  var h = GetVar(z,0) + (index/a[__size]);
+  hsv(h, 1, segBri[z]);
+}
+
+// EFFECT: minimalist KITT scanner
+function preKITT(z,a,delta) {
+  SetVar(z,0,max(3,a[__size] / 5));
+  SetVar(z, 1, triangle(time(0.2 * a[__speed])) * a[__size]);
+}
+
+function renderKITT(z,a,index,x,y) {
+  var bri;
+  bri = 1 - clamp(abs(index - GetVar(z,1)) / GetVar(z,0), 0, 1);
+  bri = bri * bri  * segBri[z];
+  hsv(a[__hue], a[__sat], bri);
+}
+
+// EFFECT: pulse/flash
+function preBreathe(z,a,delta) {
+  SetVar(z, 0, max(0.05,wave(time(.15 * a[__speed]))));
+}
+
+function renderBreathe(z,a,index,x,y) {
+  hsv(a[__hue], a[__sat], GetVar(z,0) * segBri[z]);
+}
+
+// EFFECT: slow color change
+function preSlowColor(z,a,delta) {
+  SetVar(z, 0, time(.2 * a[__speed]));
+}
+
+function renderSlowColor(z,a,index,x,y) {
+  hsv(GetVar(z,0), a[__sat], segBri[z]);
+}
+
+// EFFECT: light sparkling on snow!
+function preSnow(z,a,delta) {
+  var delay = delta + GetVar(z,0);
+
+  if (delay > (350 * a[__speed])) {
+    SetVar(z,1,random(32765));
+    delay = 0;
+  }
+
+  SetVar(z, 0, delay);
+}
+
+function renderSnow(z,a,index,x,y) {
+  var b = pRandom(GetVar(z,1) * (index+segStart[z]));
+  if (b > 0.94) {
+    rgb(segBri[z],segBri[z],segBri[z]);
+  }
+  else {
+    hsv(a[__hue], a[__sat], segBri[z]);
+  }
+}
+
+// EFFECT: Chaser up/down
+function preChaserUp(z,a,delta) {
+  SetVar(z, 0, time(0.44 * a[__speed]));
+}
+
+function preChaserDn(z,a,delta) {
+  SetVar(z, 0, 1-time(0.44 * a[__speed]));
+}
+
+function renderChaser(z,a,index,x,y) {
+   var bri = sin(GetVar(z,0) * a[__size] + index);
+   hsv(a[__hue], a[__sat], bri * segBri[z]);
+}
+
+// EFFECT: strobe
+function preStrobe(z,a,delta) {
+  SetVar(z, 0, square(time(.01 * a[__speed]),0.25));
+}
+
+function renderStrobe(z,a,index,x,y) {
+   hsv(a[__hue], a[__sat], segBri[z] * GetVar(z,0));
+}
+
+// EFFECT: random color wipe Up/Down
+function preWipeDown(z,a,delta) {
+  var index2 = a[__size] - floor(time(0.035 * a[__speed]) * a[__size]);
+
+  if (index2 > GetVar(z,0)) {
+    SetVar(z, 2, GetVar(z,1));
+    SetVar(z, 1, time(0.05));
+  }
+  SetVar(z, 0, index2);
+}
+
+function preWipeUp(z,a,delta) {
+  var index2 = floor(time(0.035 * a[__speed]) * a[__size]);
+
+  if (index2 < GetVar(z,0)) {
+    SetVar(z, 1, GetVar(z,2));
+    SetVar(z, 2, time(0.05));
+  }
+  SetVar(z, 0, index2);
+}
+
+function renderWipe(z,a,index,x,y) {
+  var h = (index <= GetVar(z,0)) ? GetVar(z,2) : GetVar(z,1);
+  hsv(h, 1, segBri[z]);
+}
+
+function preSpringyTheater(z,a,delta) {
+  SetVar(z, 0, floor(time(0.4 * a[__speed]) * a[__size]));
+  SetVar(z, 1, max(2,floor(triangle(time(0.1 * a[__speed])) * 10)));
+}
+
+function renderSpringyTheater(z,a,index,x,y) {
+  var v = ((GetVar(z,0) + index) % GetVar(z,1)) == 0;
+  hsv(a[__hue], a[__sat], v * segBri[z]);
+}
+
+// EFFECT: Port of color twinkles pattern
+function preColorTwinkles(z,a,delta) {
+  SetVar(z, 0, time(0.8 * a[__speed]) * PI2);
+  SetVar(z, 1, time(0.4 * a[__speed]) * PI2);
+}
+
+function renderColorTwinkles(z,a,index,x,y) {
+  var i = index;
+  var h = sin(i / 3 + PI2 *sin(i / 2 + GetVar(z,0)));
+  var v = wave(i / 3 / PI2 + sin(i / 2 + GetVar(z,1)));
+  v = v * v * v;
+  v =  (v > 0.1) ? v * segBri[z]: 0;
+  hsv(h, 1, v);
+}
+
+// EFFECT: Port of Plasma pattern
+function prePlasma(z,a,delta) {
+  var t1 = time(0.2 * a[__speed]);
+  SetVar(z, 0, t1);
+  SetVar(z, 1, 2 * wave(t1));
+}
+
+function renderPlasma(z,a,index,x,y) {
+  var v = wave((GetVar(z,1) + index/a[__size]) % 1);
+  v = v * v * v;
+  hsv(GetVar(z,0), 1.5-v, v * segBri[z])
+}
+
+// EFFECT: Ripples (kind of mini-oasis...)
+function preRipples(z,a,delta) {
+  SetVar(z, 0, time(0.24*a[__speed]));
+  SetVar(z, 1, time(0.4*a[__speed]));
+  SetVar(z, 2, wave(time(.32*a[__speed])));
+}
+
+function renderRipples(z,a,index,x,y) {
+  var p10 = 10/max(1,a[__size]);
+  var p6 = 6/max(1,a[__size]);
+  var p3 = p6/2;
+  var w1 = 2*(wave(index*p10 + GetVar(z,0)) - 0.5)
+  w1 = w1 * w1
+  var w2 = 2*(wave(index*p6 - GetVar(z,1)) - 0.5)
+  var w3 = 2*(wave(index*p3 + GetVar(z,2)) - 0.5)
+  var v = (w1+w2+w3)/3 ;
+  v = v * v * segBri[z];
+
+  hsv(a[__hue], a[__sat]-(v/2),v)
+}
+
+// EFFECT: Spin Cycle
+function preSpinCycle(z,a,delta) {
+  SetVar(z, 0, time(0.5*a[__speed]))
+  SetVar(z, 1, wave(time(0.25*a[__speed]))* 2)
+}
+
+function renderSpinCycle(z,a,index,x,y) {
+  var i = (index+segStart[z]) / pixelCount
+  var t1 = GetVar(z,0)
+  var h = i *(5+t1*5) + GetVar(z,1)
+  h = (h %.5) + t1
+  var v = triangle(i*5 + t1*10)
+  v = v*v*v*segBri[z];
+  hsv(h, 1, v)
+}
+
+//EFFECT: Rainbow up/down
+function preRainbowUp(z,a,delta) {
+  SetVar(z, 0, time(0.1*a[__speed]))
+}
+
+function preRainbowDown(z,a,delta) {
+  SetVar(z, 0, -time(0.1*a[__speed]))
+}
+
+function renderRainbow(z,a,index,x,y) {
+  hsv(GetVar(z,0)+(index/a[__size]), a[__sat], segBri[z])
+}
+
+//EFFECT: Xorcery
+function preXorcery(z, a, delta) {
+  //t1 = time(.1)
+  //t2 = time(.1) * PI2
+  //t3 = time(.5)
+  //t4 = time(.2) * PI2
+  SetVar(z, 0, time(.1));
+  SetVar(z, 1, time(.5));
+  SetVar(z, 2, time(.2) * PI2);
+}
+
+function renderXorcery3D(seg, a, index, x, y, zCoord) {
+  var t1 = GetVar(seg, 0);
+  var t2 = t1 * PI2;
+  var t3 = GetVar(seg, 1);
+  var t4 = GetVar(seg, 2);
+
+  var m = .3 + triangle(t1) * .2
+  var h = sin(t2)
+  h += (wave((5 * (x - .5) ^ 5 * (y - .5) ^ 5 * (zCoord - .5)) / 50 * 
+    (triangle(t3) * 10 + 4 * sin(t4)) % m))
+  var v = (abs(h) + abs(m) + t1) % 1
+  v = triangle(v * v)
+  h = triangle(h) / 5 + (x + y + zCoord) / 3 + t1
+  v = v * v * v
+
+  hsv(h, 1, v * segBri[seg])
+}
+
+function renderXorcery(z, a, index, x, y) {
+  renderXorcery3D(z, a, index, x, y, 0)
+}
+
+
+// EFFECT: Scanner
+function preScanner(z, a, delta) {
+  var scanTime = 3;
+  var row = floor(time(scanTime * 0.015) * a[__width]);
+  SetVar(z, 0, row);
+}
+
+function renderScanner(z, a, index, x, y) {
+  var bri = 0;
+  if (floor(x * a[__width]) == GetVar(z, 0)) bri = segBri[z];
+  hsv(a[__hue], a[__sat], bri);
+}
+
+
+
+//--------------------------------------------------------------------------------
+// EFFECT: Scrolling Text
+//--------------------------------------------------------------------------------
+
+
+
+// Number of characters we want to scroll by every second
+var textSpeed = 3;
+
+// Define the message to be scrolled across the display
+var messageCapacity = 32;
+export var messageLength = 0;
+export var message = array(messageCapacity); // Exported for setting via webSockets
+
+// Define the font's character set bitmap. See "Font Implementation" below.
+var charRows = 8;  //Rows in a character. 1 array per row.
+var charCols = 8;  //Columns in a character. 1 bit per column.
+
+var fontCharCount = 128;  //Max characters in the font. Must be a multiple of 4.
+var fontBitmap = array(charRows);
+for (var row = 0; row < charRows; row++) {
+  fontBitmap[row] = array(fontCharCount / 4);
+}
+
+// Global 8x8bit array for storing and fetching characters from fontBitmap
+var character = array(charRows);
+
+// Define the 2D matrix display
+var renderBuffer;
+
+var timer = 0;  //Accumulates the ms between each beforeRender()
+var colShiftPeriod = 1000 / textSpeed / charCols;  //ms between each left shift of the message across matrix columns
+
+// When we render the renderBuffer, we start by loading the leftmost column of
+// the matrix from the `bufferPointer` column in the renderBuffer.
+var bufferPointer = 0;
+
+// The next column of the overall message to load
+var messageColPointer = 0;
+
+/*
+  Font Implementation
+
+  Pixelblaze currently supports up to 64 arrays with 2048 array elements.
+
+  To store a character set of 8x8 bit characters, we use 8 arrays,
+  one for each row.
+
+  Four 8-bit maps are packed into each 32 bit array element. This makes the
+  bitwise code a little hard to follow, but uses memory efficiently. The 8 most
+  significant bits are referred to as "bank 0"; the next eight bits just left of
+  the binary point are "bank 1", etc.
+
+  Here's the scheme used to store the font bitmap. A period is a zero.
+
+    ASCII character  A        B        C        D        E
+        `charIndex`  65       66       67       68       69
+      array element  [16]     [16]     [16]     [16]     [17]
+               bank  0        1        2        3        0
+      fontBitmap[0]  ..11.... 111111.. ..1111.. 11111... 1111111.
+      fontBitmap[1]  .1111... .11..11. .11..11. .11.11.. .11...1.
+      fontBitmap[2]  11..11.. .11..11. 11...... .11..11. .11.1...
+      fontBitmap[3]  11..11.. .11111.. 11...... .11..11. .1111...
+      fontBitmap[4]  111111.. .11..11. 11...... .11..11. .11.1...
+      fontBitmap[5]  11..11.. .11..11. .11..11. .11.11.. .11...1.
+      fontBitmap[6]  11..11.. 111111.. ..1111.. 11111... 1111111.
+      fontBitmap[7]  ........ ........ ........ ........ ........
+
+  charIndex 0..31 (traditionally the ASCII control characters) are left
+  blank for user-defined custom characters.
+*/
+
+/*
+  Font and character functions
+
+  The storeCharacter functions take the character index (< `fontCharCount`) and
+  8 rows of 8 bits. Each row is a byte representing 8 bits of on/off bitmap data
+  to become the pixels of a character. Therefore, this implementation is
+  currently tightly coupled to 8-bit wide characters.
+*/
+
+/*
+  At character index `charIndex`, store 8 bytes of row data specified as
+  sequential arguments r0-r7. This allows us to easily use the public domain
+  font specified as comma-delimited hex bytes at:
+
+  https://github.com/rene-d/fontino/blob/master/font8x8_ib8x8u.ino
+*/
+function storeCharacter(charIndex, r0, r1, r2, r3, r4, r5, r6, r7) {
+  var element = floor(charIndex / 4);
+  var bank = charIndex % 4;
+  packByte(0, element, bank, r0);
+  packByte(1, element, bank, r1);
+  packByte(2, element, bank, r2);
+  packByte(3, element, bank, r3);
+  packByte(4, element, bank, r4);
+  packByte(5, element, bank, r5);
+  packByte(6, element, bank, r6);
+  packByte(7, element, bank, r7);
+}
+
+/*
+  This alternate style stores the character using the 8 row global array named
+  `character`. It could be useful for storing sprites after transformations to
+  create animations.
+*/
+function storeCharacter2(charIndex) {
+  var element = floor(charIndex / 4);
+  var bank = charIndex % 4;
+  for (var row = 0; row < charRows; row++) {
+    packByte(row, element, bank, character[row]);
+  }
+}
+
+// Loads the global `character` from the specified charIndex
+function fetchCharacter(charIndex) {
+  charIndex = floor(charIndex);
+  if (charIndex < 0 || charIndex >= fontCharCount) charIndex = 63;
+  var element = floor(charIndex / 4);
+  var bank = charIndex % 4;
+  for (var row = 0; row < charRows; row++) {
+    character[row] = unpackByte(row, element, bank);
+  }
+}
+
+/*
+  For a given row of a font's pixel data (fontBitmap[row]), there's a
+  (fontCharCount / 4) element long array that holds 32 bits per array element.
+  Thinking of each array element as a 4-byte word, the "bank" (0..3) specifies
+  which set of 8 bits we're storing for a particular character. Characters are
+  referred to by their charIndex (ASCII number), so:
+  bank 0 in elements 0, 1, & 2 store the data for characters 0, 4, 8, etc;
+  Bank 1 in elements 0, 1, & 2 store the data for characters 1, 5, 9, etc.
+
+  The method below is used because the bitwise operators only work on
+  the top 16 bits.
+*/
+var byteHolder = array(4)
+function packByte(row, element, bank, byte) {
+  var original = fontBitmap[row][element];
+
+  // Load a 4-element array with the individual bytes in this 32 bit 'word'
+  for (var _bank = 0; _bank < 4; _bank++) {
+    byteHolder[_bank] = (((original << (_bank * 8)) & 0xFF00) >> 8) & 0xFF;
+  }
+
+  // Override the 8 bits we're trying to store
+  byteHolder[bank] = byte;
+
+  // Reassemble the 32 bit 'word'
+  fontBitmap[row][element] = (byteHolder[0] << 8)
+                            + byteHolder[1]
+                            + (byteHolder[2] >> 8)
+                            + (byteHolder[3] >> 16);
+}
+
+// Inverse of packByte()
+function unpackByte(row, element, bank) {
+  var word = fontBitmap[row][element];
+  var byte;
+  if (bank > 1) {
+    byte = word << (8 * (bank - 1));
+  } else if (bank == 0) {
+    byte = word >> 8;
+  } else {
+    byte = word;
+  }
+  return byte & 0xFF; // Zero out all but the 8 bits left of the binary point
+}
+
+function setupText(a) {
+  /*
+    ASCII Chart
+
+    32      48 0    65 A   74 J    83 S    97  a    106 j    115 s
+    33 !    49 1    66 B   75 K    84 T    98  b    107 k    116 t
+    34 "    50 2    67 C   76 L    85 U    99  c    108 l    117 u
+    35 #    51 3    68 D   77 M    86 V    100 d    109 m    118 v
+    36 $    52 4    69 E   78 N    87 W    101 e    110 n    119 w
+    37 %    53 5    70 F   79 O    88 X    102 f    111 o    120 x
+    38 &    54 6    71 G   80 P    89 Y    103 g    112 p    121 y
+    39 '    55 7    72 H   81 Q    90 Z    104 h    113 q    122 z
+    40 (    56 8    73 I   82 R            105 i    114 r
+    41 )    57 9
+    42 *    58 :                   91 [                      123 {
+    43 +    59 ;                   92 \                      124 |
+    44 ,    60 <                   93 ]                      125 }
+    45 -    61 =                   94 ^                      126 ~
+    46 .    62 >                   95 _
+    47 /    63 ?                   96 `
+            64 @
+  */
+
+  // Allocate the render buffer according to the dimensions of the specified segment
+  var rows = a[__height];
+  var cols = a[__width];
+
+  // Flat storage avoids consuming one dynamically allocated array per matrix row.
+  renderBuffer = array(rows * cols);
+
+  /*
+    Font Data. Public domain, courtesy of
+    https://github.com/rene-d/fontino/blob/master/font8x8_ib8x8u.ino
+  */
+  storeCharacter( 32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);  // 0x20 (space)
+  storeCharacter( 33, 0x30, 0x78, 0x78, 0x30, 0x30, 0x00, 0x30, 0x00);  // 0x21 (exclam)
+  storeCharacter( 34, 0x6c, 0x6c, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00);  // 0x22 (quotedbl)
+  storeCharacter( 35, 0x6c, 0x6c, 0xfe, 0x6c, 0xfe, 0x6c, 0x6c, 0x00);  // 0x23 (numbersign)
+  storeCharacter( 36, 0x30, 0x7c, 0xc0, 0x78, 0x0c, 0xf8, 0x30, 0x00);  // 0x24 (dollar)
+  storeCharacter( 37, 0x00, 0xc6, 0xcc, 0x18, 0x30, 0x66, 0xc6, 0x00);  // 0x25 (percent)
+  storeCharacter( 38, 0x38, 0x6c, 0x38, 0x76, 0xdc, 0xcc, 0x76, 0x00);  // 0x26 (ampersand)
+  storeCharacter( 39, 0x60, 0x60, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00);  // 0x27 (quotesingle)
+  storeCharacter( 40, 0x18, 0x30, 0x60, 0x60, 0x60, 0x30, 0x18, 0x00);  // 0x28 (parenleft)
+  storeCharacter( 41, 0x60, 0x30, 0x18, 0x18, 0x18, 0x30, 0x60, 0x00);  // 0x29 (parenright)
+  storeCharacter( 42, 0x00, 0x66, 0x3c, 0xff, 0x3c, 0x66, 0x00, 0x00);  // 0x2a (asterisk)
+  storeCharacter( 43, 0x00, 0x30, 0x30, 0xfc, 0x30, 0x30, 0x00, 0x00);  // 0x2b (plus)
+  storeCharacter( 44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x60);  // 0x2c (comma)
+  storeCharacter( 45, 0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00);  // 0x2d (hyphen)
+  storeCharacter( 46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x00);  // 0x2e (period)
+  storeCharacter( 47, 0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00);  // 0x2f (slash)
+  storeCharacter( 48, 0x7c, 0xc6, 0xce, 0xde, 0xf6, 0xe6, 0x7c, 0x00);  // 0x30 (zero)
+  storeCharacter( 49, 0x30, 0x70, 0x30, 0x30, 0x30, 0x30, 0xfc, 0x00);  // 0x31 (one)
+  storeCharacter( 50, 0x78, 0xcc, 0x0c, 0x38, 0x60, 0xc4, 0xfc, 0x00);  // 0x32 (two)
+  storeCharacter( 51, 0x78, 0xcc, 0x0c, 0x38, 0x0c, 0xcc, 0x78, 0x00);  // 0x33 (three)
+  storeCharacter( 52, 0x1c, 0x3c, 0x6c, 0xcc, 0xfe, 0x0c, 0x1e, 0x00);  // 0x34 (four)
+  storeCharacter( 53, 0xfc, 0xc0, 0xf8, 0x0c, 0x0c, 0xcc, 0x78, 0x00);  // 0x35 (five)
+  storeCharacter( 54, 0x38, 0x60, 0xc0, 0xf8, 0xcc, 0xcc, 0x78, 0x00);  // 0x36 (six)
+  storeCharacter( 55, 0xfc, 0xcc, 0x0c, 0x18, 0x30, 0x30, 0x30, 0x00);  // 0x37 (seven)
+  storeCharacter( 56, 0x78, 0xcc, 0xcc, 0x78, 0xcc, 0xcc, 0x78, 0x00);  // 0x38 (eight)
+  storeCharacter( 57, 0x78, 0xcc, 0xcc, 0x7c, 0x0c, 0x18, 0x70, 0x00);  // 0x39 (nine)
+  storeCharacter( 58, 0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00);  // 0x3a (colon)
+  storeCharacter( 59, 0x00, 0x30, 0x30, 0x00, 0x30, 0x30, 0x60, 0x00);  // 0x3b (semicolon)
+  storeCharacter( 60, 0x18, 0x30, 0x60, 0xc0, 0x60, 0x30, 0x18, 0x00);  // 0x3c (less)
+  storeCharacter( 61, 0x00, 0x00, 0xfc, 0x00, 0x00, 0xfc, 0x00, 0x00);  // 0x3d (equal)
+  storeCharacter( 62, 0x60, 0x30, 0x18, 0x0c, 0x18, 0x30, 0x60, 0x00);  // 0x3e (greater)
+  storeCharacter( 63, 0x78, 0xcc, 0x0c, 0x18, 0x30, 0x00, 0x30, 0x00);  // 0x3f (question)
+  storeCharacter( 64, 0x7c, 0xc6, 0xde, 0xde, 0xde, 0xc0, 0x78, 0x00);  // 0x40 (at)
+  storeCharacter( 65, 0x30, 0x78, 0xcc, 0xcc, 0xfc, 0xcc, 0xcc, 0x00);  // 0x41 (A)
+  storeCharacter( 66, 0xfc, 0x66, 0x66, 0x7c, 0x66, 0x66, 0xfc, 0x00);  // 0x42 (B)
+  storeCharacter( 67, 0x3c, 0x66, 0xc0, 0xc0, 0xc0, 0x66, 0x3c, 0x00);  // 0x43 (C)
+  storeCharacter( 68, 0xf8, 0x6c, 0x66, 0x66, 0x66, 0x6c, 0xf8, 0x00);  // 0x44 (D)
+  storeCharacter( 69, 0xfe, 0x62, 0x68, 0x78, 0x68, 0x62, 0xfe, 0x00);  // 0x45 (E)
+  storeCharacter( 70, 0xfe, 0x62, 0x68, 0x78, 0x68, 0x60, 0xf0, 0x00);  // 0x46 (F)
+  storeCharacter( 71, 0x3c, 0x66, 0xc0, 0xc0, 0xce, 0x66, 0x3e, 0x00);  // 0x47 (G)
+  storeCharacter( 72, 0xcc, 0xcc, 0xcc, 0xfc, 0xcc, 0xcc, 0xcc, 0x00);  // 0x48 (H)
+  storeCharacter( 73, 0x78, 0x30, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00);  // 0x49 (I)
+  storeCharacter( 74, 0x1e, 0x0c, 0x0c, 0x0c, 0xcc, 0xcc, 0x78, 0x00);  // 0x4a (J)
+  storeCharacter( 75, 0xe6, 0x66, 0x6c, 0x78, 0x6c, 0x66, 0xe6, 0x00);  // 0x4b (K)
+  storeCharacter( 76, 0xf0, 0x60, 0x60, 0x60, 0x62, 0x66, 0xfe, 0x00);  // 0x4c (L)
+  storeCharacter( 77, 0xc6, 0xee, 0xfe, 0xfe, 0xd6, 0xc6, 0xc6, 0x00);  // 0x4d (M)
+  storeCharacter( 78, 0xc6, 0xe6, 0xf6, 0xde, 0xce, 0xc6, 0xc6, 0x00);  // 0x4e (N)
+  storeCharacter( 79, 0x38, 0x6c, 0xc6, 0xc6, 0xc6, 0x6c, 0x38, 0x00);  // 0x4f (O)
+  storeCharacter( 80, 0xfc, 0x66, 0x66, 0x7c, 0x60, 0x60, 0xf0, 0x00);  // 0x50 (P)
+  storeCharacter( 81, 0x78, 0xcc, 0xcc, 0xcc, 0xdc, 0x78, 0x1c, 0x00);  // 0x51 (Q)
+  storeCharacter( 82, 0xfc, 0x66, 0x66, 0x7c, 0x6c, 0x66, 0xe6, 0x00);  // 0x52 (R)
+  storeCharacter( 83, 0x78, 0xcc, 0xe0, 0x70, 0x1c, 0xcc, 0x78, 0x00);  // 0x53 (S)
+  storeCharacter( 84, 0xfc, 0xb4, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00);  // 0x54 (T)
+  storeCharacter( 85, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xfc, 0x00);  // 0x55 (U)
+  storeCharacter( 86, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x00);  // 0x56 (V)
+  storeCharacter( 87, 0xc6, 0xc6, 0xc6, 0xd6, 0xfe, 0xee, 0xc6, 0x00);  // 0x57 (W)
+  storeCharacter( 88, 0xc6, 0xc6, 0x6c, 0x38, 0x38, 0x6c, 0xc6, 0x00);  // 0x58 (X)
+  storeCharacter( 89, 0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x30, 0x78, 0x00);  // 0x59 (Y)
+  storeCharacter( 90, 0xfe, 0xc6, 0x8c, 0x18, 0x32, 0x66, 0xfe, 0x00);  // 0x5a (Z)
+  storeCharacter( 91, 0x78, 0x60, 0x60, 0x60, 0x60, 0x60, 0x78, 0x00);  // 0x5b (bracketleft)
+  storeCharacter( 92, 0xc0, 0x60, 0x30, 0x18, 0x0c, 0x06, 0x02, 0x00);  // 0x5c (backslash)
+  storeCharacter( 93, 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x78, 0x00);  // 0x5d (bracketright)
+  storeCharacter( 94, 0x10, 0x38, 0x6c, 0xc6, 0x00, 0x00, 0x00, 0x00);  // 0x5e (asciicircum)
+  storeCharacter( 95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff);  // 0x5f (underscore)
+  storeCharacter( 96, 0x30, 0x30, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00);  // 0x60 (grave)
+  storeCharacter( 97, 0x00, 0x00, 0x78, 0x0c, 0x7c, 0xcc, 0x76, 0x00);  // 0x61 (a)
+  storeCharacter( 98, 0xe0, 0x60, 0x60, 0x7c, 0x66, 0x66, 0xdc, 0x00);  // 0x62 (b)
+  storeCharacter( 99, 0x00, 0x00, 0x78, 0xcc, 0xc0, 0xcc, 0x78, 0x00);  // 0x63 (c)
+  storeCharacter(100, 0x1c, 0x0c, 0x0c, 0x7c, 0xcc, 0xcc, 0x76, 0x00);  // 0x64 (d)
+  storeCharacter(101, 0x00, 0x00, 0x78, 0xcc, 0xfc, 0xc0, 0x78, 0x00);  // 0x65 (e)
+  storeCharacter(102, 0x38, 0x6c, 0x60, 0xf0, 0x60, 0x60, 0xf0, 0x00);  // 0x66 (f)
+  storeCharacter(103, 0x00, 0x00, 0x76, 0xcc, 0xcc, 0x7c, 0x0c, 0xf8);  // 0x67 (g)
+  storeCharacter(104, 0xe0, 0x60, 0x6c, 0x76, 0x66, 0x66, 0xe6, 0x00);  // 0x68 (h)
+  storeCharacter(105, 0x30, 0x00, 0x70, 0x30, 0x30, 0x30, 0x78, 0x00);  // 0x69 (i)
+  storeCharacter(106, 0x0c, 0x00, 0x0c, 0x0c, 0x0c, 0xcc, 0xcc, 0x78);  // 0x6a (j)
+  storeCharacter(107, 0xe0, 0x60, 0x66, 0x6c, 0x78, 0x6c, 0xe6, 0x00);  // 0x6b (k)
+  storeCharacter(108, 0x70, 0x30, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00);  // 0x6c (l)
+  storeCharacter(109, 0x00, 0x00, 0xcc, 0xfe, 0xfe, 0xd6, 0xc6, 0x00);  // 0x6d (m)
+  storeCharacter(110, 0x00, 0x00, 0xf8, 0xcc, 0xcc, 0xcc, 0xcc, 0x00);  // 0x6e (n)
+  storeCharacter(111, 0x00, 0x00, 0x78, 0xcc, 0xcc, 0xcc, 0x78, 0x00);  // 0x6f (o)
+  storeCharacter(112, 0x00, 0x00, 0xdc, 0x66, 0x66, 0x7c, 0x60, 0xf0);  // 0x70 (p)
+  storeCharacter(113, 0x00, 0x00, 0x76, 0xcc, 0xcc, 0x7c, 0x0c, 0x1e);  // 0x71 (q)
+  storeCharacter(114, 0x00, 0x00, 0xdc, 0x76, 0x66, 0x60, 0xf0, 0x00);  // 0x72 (r)
+  storeCharacter(115, 0x00, 0x00, 0x7c, 0xc0, 0x78, 0x0c, 0xf8, 0x00);  // 0x73 (s)
+  storeCharacter(116, 0x10, 0x30, 0x7c, 0x30, 0x30, 0x34, 0x18, 0x00);  // 0x74 (t)
+  storeCharacter(117, 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0xcc, 0x76, 0x00);  // 0x75 (u)
+  storeCharacter(118, 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x00);  // 0x76 (v)
+  storeCharacter(119, 0x00, 0x00, 0xc6, 0xd6, 0xfe, 0xfe, 0x6c, 0x00);  // 0x77 (w)
+  storeCharacter(120, 0x00, 0x00, 0xc6, 0x6c, 0x38, 0x6c, 0xc6, 0x00);  // 0x78 (x)
+  storeCharacter(121, 0x00, 0x00, 0xcc, 0xcc, 0xcc, 0x7c, 0x0c, 0xf8);  // 0x79 (y)
+  storeCharacter(122, 0x00, 0x00, 0xfc, 0x98, 0x30, 0x64, 0xfc, 0x00);  // 0x7a (z)
+  storeCharacter(123, 0x1c, 0x30, 0x30, 0xe0, 0x30, 0x30, 0x1c, 0x00);  // 0x7b (braceleft)
+  storeCharacter(124, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00);  // 0x7c (bar)
+  storeCharacter(125, 0xe0, 0x30, 0x30, 0x1c, 0x30, 0x30, 0xe0, 0x00);  // 0x7d (braceright)
+  storeCharacter(126, 0x76, 0xdc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);  // 0x7e (asciitilde)
+
+  // Other user-defined custom characters
+
+  // ASCII 63 is the question mark - here's an alternative from the
+  // Sinclair ZX81 font, stored in custom slot 30
+  storeCharacter(30,
+    0b00000000,
+    0b00111100,
+    0b01000010,
+    0b00000100,
+    0b00001000,
+    0b00000000,
+    0b00001000,
+    0b00000000
+  );
+
+  // This demonstrates copying the character, altering it, then storing it in the
+  // next slot. You could use this for programmatic animation.
+  fetchCharacter(30);
+  character[7] = 0b00001000;
+  storeCharacter2(31);
+
+  // Setup default message: "  Hello!  "
+  messageLength = 10;
+  message[0] = 32;   // space
+  message[1] = 32;   // space
+  message[2] = 72;   // H
+  message[3] = 101;  // e
+  message[4] = 108;  // l
+  message[5] = 108;  // l
+  message[6] = 111;  // o
+  message[7] = 33;   // !
+  message[8] = 32;   // space
+  message[9] = 32;   // space
+}
+
+/*
+  E.g.: 8x8 matrix, rendering halfway through "AC": Right side of A, left of C
+
+          renderbuffer[r][c]             Renders as:
+
+  `bufferPointer` == 4 means leftmost column is here, and wraps around to 3
+                     ↓
+       col = 0 1 2 3 4 5 6 7                0 1 2 3 4 5 6 7
+    row = 0  . . . 1 1 . . .             0  1 . . . . . . 1
+          1  . . 1 1 1 1 . .             1  1 1 . . . . 1 1
+          2  . 1 1 . . 1 1 .             2  . 1 1 . . 1 1 .
+          3  . 1 1 . . 1 1 .             3  . 1 1 . . 1 1 .
+          4  . 1 1 . 1 1 1 .             4  1 1 1 . . 1 1 .
+          4  . . 1 1 . 1 1 .             4  . 1 1 . . . 1 1
+          5  . . . 1 . 1 1 .             5  . 1 1 . . . . 1
+          7  . . . . . . . .             7  . . . . . . . .
+                     ↑
+                     This column will be replaced with the next column of "C",
+                       ↑ then we'll advance `bufferPointer`
+
+Each element is a 16.16 fixed point number, so you could decide to pack HSV or
+RGB info into each byte, but this example is monochrome so each element just
+stores a 0 or 1, making rendering as simple as:
+
+    if (renderBuffer[row][col]) hsv(0,0,1)
+*/
+
+// Load the next column from `message` into `renderBuffer` at `bufferPointer`
+function loadNextCol(matrixRows, matrixCols) {
+  messageLength = clamp(floor(messageLength), 0, messageCapacity);
+  if (messageLength <= 0 || matrixRows < charRows || matrixCols <= 0) return;
+  var charIndex = message[floor(messageColPointer / charCols)];
+  fetchCharacter(charIndex); // loads global `character` with ASCII charIndex
+
+  var rowOffset = floor((matrixRows - charRows) / 2);
+  var colIndex = messageColPointer % charCols;
+  for (var row = 0; row < charRows; row++) {
+    var bit = (((character[row] << colIndex) & 0b10000000) == 0b10000000);
+    renderBuffer[((row + rowOffset) * matrixCols) + bufferPointer] = bit;
+  }
+
+  bufferPointer = (bufferPointer + 1) % matrixCols;
+  messageColPointer = (messageColPointer + 1) % (messageLength * charCols);
+}
+
+function preRenderText(z,a,delta) {
+  messageLength = clamp(floor(messageLength), 0, messageCapacity);
+  if (messageLength <= 0 || a[__height] < charRows) return;
+  timer += (delta * a[__speed]);
+  var shifts = 0;
+  while (timer >= colShiftPeriod && shifts < 8) {
+    timer -= colShiftPeriod;
+    loadNextCol(a[__height], a[__width]); // Shift and load a new column every colShiftPeriod ms
+    shifts++;
+  }
+}
+
+function renderText(z, a, index, x, y) {
+  if (messageLength <= 0) {
+    hsv(0, 0, 0);
+    return;
+  }
+
+  // y is in units of 0...1 where (0,0) is the top-left and y is +↓
+  var row = round(y * (a[__height] - 1));
+
+  // The column to render is like the row, but physical column 0 (the leftmost)
+  // starts bufferPointer columns into the renderBuffer.
+  var col = (round(x * (a[__width] - 1)) + bufferPointer) % a[__width];
+
+  var v = renderBuffer[(row * a[__width]) + col];  // 1 or 0
+  hsv(a[__hue], a[__sat], v * segBri[z]);
+}
+
+
+
+//--------------------------------------------------------------------------------
+// EFFECT: Eyes
+//--------------------------------------------------------------------------------
+
+
+
+var neyes = 2             // Show 1 or 2 eyes on the display
+var Amax = .3             // Maximum eye width (based on one eye, code will take care of shrinking for 2)
+var Bmax = .45            // Maximum eye height (Using value of 0.25 for 1 eye, 0.20 for 2 eyes)
+var Riris = 0.08          // Radius of the iris (using value of 0.16 for 1 eye, 0.12 for 2 eyes)
+var lineThreshold = 0.07  // Controls thicknes of eye (ellipse) outline
+var blink = false         // Are we in the middle of a blink?
+var blinkPhase = 0        // How long have we been in this phase of blinking (value in seconds)
+var blinkInterval = 2     // Time interval (in seconds) before the next blink
+var blinkLength = .5      // Total time interval (in seconds) of the blink
+var move = false          // Are the irises moving? (from center to side, then back again)
+var movePhase = 0         // How long have we been in this phase of iris motion (value in seconds)
+var moveDir = 1           // Which direction are the irises moving (either -1 or 1)
+var moveInterval = 2.1    // Time interval (in seconds) before we move 
+var moveLength = 0.3      // Total time interval (in seconds) for the eye movement
+var midIris = 0           // Position of the middle of the iris relative to the middle of the eye
+var B                     // Current eye outline (ellipse) height for use in the ellipse equation (changes during the blink phase)
+
+function preEyes(z, a, delta) {
+  // Update our motion timer
+  movePhase += delta/1000
+  if (move) {
+    if (movePhase > moveLength) {   // At the end of motion time interval
+      movePhase = 0
+      move = false
+      //randomize time to next movement
+      moveInterval = 0.5 + random(.7)
+      midIris = 0;
+    } else {
+      // Smoothly move center -> side -> center over the configured interval.
+      var moveProgress = clamp(movePhase / moveLength, 0, 1);
+      midIris = moveDir * sin(PI * moveProgress) / 4;
+    }
+  } else {
+    if (movePhase > moveInterval) { // At the end of motionless time interval
+      movePhase = 0
+      // Randomize direction of eye movement
+      moveDir = random(1) > 0.5 ? 1 : -1
+      move = true
+    }
+    // If not moving, iris position fixed in the center
+    midIris = 0
+  }
+
+  blinkPhase += delta/1000
+  if (blink) {
+    if (blinkPhase > blinkLength) {  // At the end of blinking time interval
+      blinkPhase = 0
+      blink = false
+      // Randomize time to next blink
+      blinkInterval = 2 + random(1)
+      B = Bmax;
+    } else {
+      var blinkProgress = clamp(blinkPhase / blinkLength, 0, 1);
+      B = clamp(Bmax * abs((2 * blinkProgress) - 1), .05, Bmax);
+    }
+  } else {  //Not blinking
+    // B is at maximum value unless we are blinking
+    B = Bmax
+    if (blinkPhase > blinkInterval) { // At the end of non-blinking time interval
+      blinkPhase = 0    // Reset clock
+      blink = true      // Start blink mode
+    }
+  }
+}
+
+function renderEyes(z, a, index, x0, y0) {
+  // Rescale coordinates to (0,0) in center of screen. X scale depends on whether we have 1 or 2 eyes
+  var x = (x0-.5)*neyes
+  if (neyes > 1) {
+    x += (x > 0 ? -0.5 : 0.5)
+  }
+  var y = y0 - 0.5
+  
+  // Distance from center of iris to our pixel
+  var dIris = hypot((midIris - x)/neyes,y)
+  // Distance to elipse line
+  var dscale = hypot(x/Amax, y/B)
+  var v = 0
+  // Draw the iris if (a) not blinking (b) we're within the iris radius 
+  if (!blink && (dIris < Riris)) {
+    // Draw iris
+    v = dIris/Riris
+    hsv(.6, 1, v*v*segBri[z])
+  }
+  else {
+    // Draw eye outline
+    v = dscale < 1 ? max(dscale-lineThreshold,lineThreshold) : 0
+    var val = v*v*v
+    val *= val
+    val *= segBri[z]
+    rgb(val, val, val)
+  }
+}
+
+
+
+//--------------------------------------------------------------------------------
+// EFFECT: Snake
+//--------------------------------------------------------------------------------
+
+
+
+// Variables are set globally for use in other functions
+function setupSnake(a) {
+  // User-adjustable parameters
+  edgePct = .15       // Edge width, in percentage of the lesser of width or height. Snake tries to avoid edges. 
+  radius = sqrt(a[__size]) * 3/16   // Radius of the snake head in pixels. 3 on a 16x16
+  nominalDecay = .98  // Fade each pixel per frame. Adjusted for speed and delta.
+  maxDeflection = .2  // Radians per frame when escaping a boundary (edge)
+  nominalDeflection = .1  // Radians per frame when slithering
+
+  nominalSpeed = 0.02
+  speed = nominalSpeed
+
+  posX = 0                    // Positon of snakehead, in pixels. Set initial position.
+  posY = 0
+  bearing = PI / 4            // Direction of travel, in radians
+
+  deflection = nominalDeflection // Turn by deflecting the bearing each frame (radians)
+  adjSpeed = 0                   // User-commanded speed modified by the wandering fn and proximity to edges
+  adjDeflection = 0              // Deflection angle modified for the adjusted speed
+  thisTurn = 0                   // Accumulated radians in the current slither / turn
+  nominalDelta = 15              // A reference delta used to adapt turns for running speed (e.g. number of pixels)
+  cx = a[__width] / 2            // Centers in x and y, in pixels
+  cy = a[__height] / 2
+  cornerDist = hypot(cx, cy)  // Distance from center to a corner
+  edge = min(a[__width], a[__height]) * edgePct // Edge border thickness, in pixels
+  escapeDeflection =  0       // The current corrective deflection to escape edges or corners
+  // Flat storage avoids consuming one dynamically allocated array per column.
+  matrix = array(a[__width] * a[__height]);
+}
+
+function preSnake(z, a, delta) {
+  var t1 = time(6  / 65.535) // Hue modifier
+  var t2 = time(30 / 65.535) // Speed wandering period
+
+  SetVar(z, 0, t1);
+
+  changeDirRandomly(delta)
+  avoidWalls(a[__width], a[__height])
+
+  // Speed wanders around the user-specified speed, and gets faster when near the edges
+  adjSpeed = speed * wander(t2) * (.5 + hypot(posX - cx, posY - cy)/cornerDist) 
+  // Adjust the bearing deflection (curve) for speed input and delta
+  adjDeflection = deflection * adjSpeed / nominalSpeed * delta / nominalDelta
+  bearing = mod(bearing + adjDeflection, PI2) // Make the turn, keep bearing in 0..PI2
+
+  slither() // Reverse the turn so it doesn't normally eat its own tail
+
+  posX += adjSpeed * delta * cos(bearing)
+  posY += adjSpeed * delta * sin(bearing)
+
+  bounceOffWalls(a[__width], a[__height])
+  prerenderSnake(a[__width], a[__height])
+}
+
+// Moody snake doesn't always slither predictibly
+function changeDirRandomly(_delta) {
+  // At 100FPS, this is roughly reversing once within 3 seconds
+  if(random(30 * _delta) < 1) deflection *= -1
+}
+
+function avoidWalls(width, height) {
+  var towardsVecX = 0, towardsVecY = 0
+  if (width - posX < edge) towardsVecX = 1
+  if (height - posY < edge) towardsVecY = 1
+  if (posX < edge) towardsVecX = -1
+  if (posY < edge) towardsVecY = -1
+  // If set, (towardsVecX, towardsVecY) is now the vector to the closest edge or corner
+
+  if (towardsVecX == 0 && towardsVecY == 0) {  // Not near an edge
+    if (escapeDeflection) { // Was just in an edge (but now not)
+      deflection = nominalDeflection * ((random(2) > 1) ? -1 : 1)
+      thisTurn = escapeDeflection = 0
+    }
+    return
+  }
+  
+  // If we get here, we're in range of an edge or corner.
+  
+  // Angle towards nearest wall or corner, 0..PI2
+  var towardsAngle = (atan2(towardsVecY, towardsVecX) + PI2) % PI2
+  
+  if (towardsVecX * towardsVecY != 0) {
+    // In a corner; keep an existing turn going or set one up
+    escapeDeflection = escapeDeflection || maxDeflection
+  } else {
+    // Near an edge. Deflect away from it.
+    var deviation = angleDiff(bearing, towardsAngle)
+    escapeDeflection = deviation > 0 ? maxDeflection : -maxDeflection
+  }
+
+  // We will escape if our bearing is within 45 degrees of the vector away from edge of corner
+  var willEscape = abs(angleDiff(towardsAngle + PI, bearing)) < PI / 8
+
+  deflection = willEscape ? 0 : escapeDeflection // End turns if headed away from the edge
+}
+
+// Pseudo gradient noise
+// https://www.desmos.com/calculator/rvtrkskoqa
+function wander(t) {
+  t *= 49.261 // Define period for t in 0..1; see graph
+  return .6 + 3 * wave(t/2)*wave(t/3)*wave(t/5)*wave(t/7)
+}
+
+// Turn the other direction if it's been a half turn
+function slither() {
+  thisTurn += adjDeflection
+  if (abs(thisTurn) > PI) {
+    deflection *= -1
+    thisTurn = 0
+  }
+}
+
+// Return (angle - targetAngle) within -PI..PI
+function angleDiff(angle, target) {
+  return mod(angle - target + PI, PI2) - PI
+}
+
+// Bounce like a billiard ball
+function bounceOffWalls(width, height) {
+  if (posX <= 0 || posX >= width) {
+    bearing = -bearing + PI
+    posX = clamp(posX, 0, width)
+  }
+  if (posY <= 0 || posY >= height) {
+    bearing *= -1
+    posY = clamp(posY, 0, height)
+  }
+}
+
+// A 2D array holds each pixel's heat. Cool each pixel, and heat pixels 
+// within `radius` of head (posX, posY). Since the inner loop runs as 
+// much as render(), there are modifications for speed over readability.
+function prerenderSnake(width, height) {
+  // Adjust the exponential decay (tail cooling) for the speed of travel
+  var decay = pow(2, log2(nominalDecay) / (nominalSpeed / adjSpeed))
+  var speedFactor = adjSpeed / nominalSpeed
+
+  // Heat up pixels near the snake's head
+  for(x = 0; x < width; x++) {
+    for(y = 0; y < height; y++) {
+      var matrixIndex = (x * height) + y;
+      matrix[matrixIndex] *= decay
+      var distanceToHead = hypot(posX - x, posY - y)
+      if (distanceToHead > radius) continue // Boosts FPS
+      var proximity = 1 - distanceToHead / radius
+      matrix[matrixIndex] = min(1, matrix[matrixIndex] + pow(proximity, 6) * speedFactor)
+    }
+  }
+}
+
+function renderSnake(z, a, index, x, y) {
+  var t1 = GetVar(z, 0);
+
+  var matrixX = round(x * (a[__width]-1));
+  var matrixY = round(y * (a[__height]-1));
+  var v = matrix[(matrixX * a[__height]) + matrixY]
+  var s = 1 - pow(v, 8)
+  var h = v / 4 + t1
+  hsv(h, s, v * v * segBri[z])
+}
+
+
+
+//--------------------------------------------------------------------------------
+// Effect: Tunnel of Squares
+//--------------------------------------------------------------------------------
+
+
+var squareSpeed = 3;
+var nSquares = 4;
+var cosT = cos(0.1);
+var sinT = sin(0.1);
+
+function signum(a) {
+  return (a > 0) - (a < 0)
+}
+
+/*
+export function sliderSpeed(v) {
+  speed = 1+9* v;
+}
+
+export function sliderSquarocity(v) {
+  nSquares = 1+floor(6*v);
+}
+*/
+
+function preRenderTunnelSquares(z, a, delta) {
+  var timebase = GetVar(z, 0);
+
+  timebase = (GetVar(z, 0) + delta/1000) % 3600;
+  var t2 = time(0.08);
+  var t1 = squareSpeed * timebase;
+
+  SetVar(z, 0, timebase);
+  SetVar(z, 1, t1);
+  SetVar(z, 2, t2);
+}
+
+// squared spiral expression adapted from https://www.shadertoy.com/view/4tlfRB
+function renderTunnelSquares(z, a, index, x, y) {
+  x -= 0.5;
+  y -= 0.5;
+
+  var timebase = GetVar(z, 0);
+  var t1 = GetVar(z, 1);
+  var t2 = GetVar(z, 2);
+
+  var x1 = signum(x); var y1 = signum(y);
+  var sx = x1 * cosT + y1 * sinT;
+  var sy = y1 * cosT - x1 * sinT;
+
+  var dx = abs(sin(nSquares*log(max(0.0001, x * sx + y * sy)) + atan2(y,x) - t1))
+
+  hsv(t2 + x*sx + y*sy, 1, dx * dx * dx * segBri[z])
+}
+
+
+
+//--------------------------------------------------------------------------------
+// EFFECT: Line Dancer
+//--------------------------------------------------------------------------------
+
+var linedancerSpeed = 4.6;
+var linedancerTwist = 2.25;
+var linedancerSides = 1;
+var linedancerSlice = PI / linedancerSides;
+
+/*
+export function sliderSpeed(v) {
+  speed = 1+(9*v);
+}
+
+export function sliderTwist(v) {
+  linedancerTwist = 1.25+(0.75*v);
+}
+
+export function sliderReflections(v) {
+  linedancerSides = 1+floor(6*v);
+  linedancerSlice = PI / linedancerSides;
+}
+*/
+
+// sets up a kaleidoscope effect - makes the image repeat over evenly divided
+// rotated "slices" about the center.
+var lineOutx;
+var lineOuty;
+
+function kal(x,y,t1,timebase) {
+  var angle = atan2(y, x);
+  angle = mod(angle, 2.0 * linedancerSlice);
+
+  // uncomment to reflect each slice so they can be tiled
+  // evenly if you like.
+  //angle = abs (angle - slice);
+
+  // rotate image over time
+  angle += PI*timebase;
+
+  // map new rotated coordinates back to original image space
+  var d = hypot(x,y);
+  lineOutx = d * cos(angle);  lineOuty = d * sin(angle);
+}
+
+function preRenderLinedancer(z, a, delta) {
+  var timebase = GetVar(z, 0);
+
+  timebase = (timebase + delta/1000) % 1000;
+  var t1 = timebase * linedancerSpeed;
+  var zoom = wave(time(0.075));
+
+  SetVar(z, 0, timebase);
+  SetVar(z, 1, t1);
+  SetVar(z, 2, zoom);
+}
+
+function renderLinedancer(z, a, index, x, y) {
+  x -= 0.5;
+  y -= 0.5;
+
+  var timebase = GetVar(z, 0);
+  var t1 = GetVar(z, 1);
+  var zoom = GetVar(z, 2);
+
+  var h,b,radius,theta;
+
+  if (linedancerSides > 1) { kal(x,y,t1,timebase); x = lineOutx; y = lineOuty; }
+
+  radius = linedancerTwist-hypot(x,y)*2.4;
+  theta = radius * radius * sin(radius + t1);
+  x = (cos(theta) * x) - (sin(theta)* y);
+
+  b = 1-wave(x*4.6*zoom);
+  h = (x * zoom)+ zoom + theta/PI2;
+  hsv(h, 1, b*b*segBri[z]);
+}
+
+
+
+//--------------------------------------------------------------------------------
+// Main Renderer
+//--------------------------------------------------------------------------------
+
+
+
+// RENDER TIME FUNCTIONS
+var testTime = 0;
+function segTester(delta) {
+  testTime += delta;
+
+  if (testTime > 4000) {
+    z_0[__bri] = !z_0[__bri];
+    z_0[__ftime] = 3;
+
+    testTime = 0
+  }
+}
+
+
+// evaluate current segment layout and call prerender
+// functions for active effects
+var timebase = 50;
+export function beforeRender(delta) {
+	var start = 0;
+	var i, t;
+
+  __n_segments = floor(clamp(__n_segments, 1, __max_segments));
+  __layout_valid = pixelCount == __expected_pixels;
+
+	// millisecond timer
+	timebase = (timebase + delta / 1000) % 3600;
+
+	//segTester(delta)
+
+  for (i = 0; i < __n_segments; i++) {
+    var a = segTable[i];
+
+    // Treat websocket variables as untrusted input before using them as array indexes.
+    a[__switch] = a[__switch] >= 0.5;
+    a[__hue] = mod(a[__hue], 1);
+    a[__sat] = clamp(a[__sat], 0, 1);
+    a[__bri] = clamp(a[__bri], 0, 1);
+    a[__effect] = floor(clamp(a[__effect], 0, __n_effects - 1));
+    a[__size] = floor(clamp(a[__size], 0, pixelCount - start));
+    a[__speed] = clamp(a[__speed], 0.05, 10);
+    a[__ftime] = clamp(a[__ftime], 0, 30);
+    a[__width] = max(1, floor(a[__width]));
+    a[__height] = max(1, floor(a[__height]));
+    // Matrix-only effects are supported only by the main visor segment.
+    if (i > 0 && a[__effect] >= 20) a[__effect] = 0;
+
+    // if brightness was changed since last frame,
+    // set target level and start fade clock
+    if (a[__bri] != fadeTarget[i]) {
+      fadeStart[i] = segBri[i]
+      fadeTarget[i] = a[__bri];
+      fadeTime[i] = timebase;
+    }
+    else {
+      if (fadeTime[i] >= 0) {
+        var t = mod(timebase - fadeTime[i] + 3600, 3600);
+
+        if (t >= a[__ftime]) {
+           segBri[i] = fadeStart[i] = fadeTarget[i] = a[__bri];
+           fadeTime[i] = -1;
+        } else {
+         t = (t/a[__ftime]);  // pct completion
+         segBri[i] = SmoothFade(fadeStart[i],fadeTarget[i],t);
+        }
+      }
+    }
+
+    segStart[i] = start;
+    start += a[__size];
+    segEnabled[i] = __layout_valid && a[__switch] && (segStart[i] < pixelCount) && (a[__size] > 0);
+    if (segEnabled[i]) {
+      segPreRender[a[__effect]](i,a,delta);
+    }
+  }
+  segStart[i] = 32765  // end-of-list sentinel
+  segNumber = 0;
+}
+
+// If segment is on, call rendering fn from table. If off, set pixel off.
+// Segments of 0 length are treated as "off".
+var segNumber;
+export function render(index) {
+  while (segNumber < __n_segments - 1 && index >= segStart[segNumber+1]) segNumber++;
+
+  if (segEnabled[segNumber] && index < segStart[segNumber] + segTable[segNumber][__size]) {
+    // Calculate index relative to segment's global start index
+    var localIndex = index - segStart[segNumber];
+
+    // Evaluate pixel map
+    segMaps[segNumber](segNumber, segTable[segNumber], localIndex);
+
+    // Render the segment
+    segRender[segTable[segNumber][__effect]](segNumber, segTable[segNumber], localIndex, mappedX, mappedY);
+	}
+	else {
+	  hsv(0,0,0);
+  }
+}
+
+// main entry point
+Initialize();
