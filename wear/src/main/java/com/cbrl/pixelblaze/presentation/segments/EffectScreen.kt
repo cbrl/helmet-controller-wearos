@@ -59,7 +59,7 @@ fun EffectScreen(viewModel: HelmetViewModel, segment: HelmetSegment) {
         TransformingLazyColumn(state = listState, contentPadding = contentPadding) {
             item {
                 ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) {
-                    Text("${segment.shortLabel} effect")
+                    Text("${segment.shortLabel} effect".uppercase())
                 }
             }
             groups.forEach { (category, effects) ->

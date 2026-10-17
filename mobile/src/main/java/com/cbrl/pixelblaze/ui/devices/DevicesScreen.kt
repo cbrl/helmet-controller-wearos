@@ -3,6 +3,7 @@ package com.cbrl.pixelblaze.ui.devices
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.provider.Settings
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -23,15 +24,13 @@ import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
@@ -51,11 +51,13 @@ import com.cbrl.pixelblaze.device.PixelblazeEndpoint
 import com.cbrl.pixelblaze.helmet.HelmetConnectionState
 import com.cbrl.pixelblaze.helmet.HelmetViewModel
 import com.cbrl.pixelblaze.helmet.PixelblazeStatus
+import com.cbrl.pixelblaze.ui.components.PyramidLoader
 import com.cbrl.pixelblaze.ui.components.SectionCard
 import com.cbrl.pixelblaze.ui.components.SectionLabel
 import com.cbrl.pixelblaze.ui.components.SectionShape
 import com.cbrl.pixelblaze.ui.components.StatusDot
 import com.cbrl.pixelblaze.ui.components.connectionLabel
+import com.cbrl.pixelblaze.ui.components.panel
 import com.cbrl.pixelblaze.ui.components.showMessage
 import kotlin.math.roundToInt
 
@@ -96,8 +98,8 @@ fun DevicesScreen(
 
         item(key = "found-header") {
             Row(Modifier.padding(start = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                SectionLabel("On this network", Modifier.weight(1f))
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                SectionLabel("On this network", Modifier.weight(1f).padding(end = 10.dp), line = true)
+                PyramidLoader(MaterialTheme.colorScheme.onSurface, size = 18.dp)
             }
         }
         discovery.errorMessage?.let { error ->
@@ -224,14 +226,20 @@ private fun SelectedDeviceCard(
 
 @Composable
 private fun FoundDevice(device: PixelblazeEndpoint, selected: Boolean, onClick: () -> Unit) {
-    Card(
+    Surface(
         onClick = onClick,
         shape = SectionShape,
-        colors = CardDefaults.cardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-        ),
+        color = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurface,
     ) {
-        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .panel(SectionShape)
+                .then(if (selected) Modifier.border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f), SectionShape) else Modifier)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Icon(Icons.Filled.Router, null, Modifier.size(28.dp))
             Column(Modifier.weight(1f).padding(start = 14.dp)) {
                 Text("Pixelblaze ${device.displayId}", style = MaterialTheme.typography.titleMedium)

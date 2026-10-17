@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
@@ -47,6 +48,7 @@ import com.cbrl.pixelblaze.presentation.components.SegmentDot
 import com.cbrl.pixelblaze.presentation.components.StepSlider
 import com.cbrl.pixelblaze.presentation.components.icon
 import com.cbrl.pixelblaze.presentation.components.listItem
+import com.cbrl.pixelblaze.presentation.theme.Led
 import kotlin.math.roundToInt
 
 @Composable
@@ -59,7 +61,7 @@ fun SegmentsScreen(viewModel: HelmetViewModel, onOpen: (HelmetSegment) -> Unit) 
     ScreenScaffold(scrollState = listState) { contentPadding ->
         TransformingLazyColumn(state = listState, contentPadding = contentPadding) {
             item {
-                ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) { Text("Segments") }
+                ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) { Text("SEGMENTS") }
             }
             items(HelmetSegment.entries, key = { it.id }) { segment ->
                 val segmentState = state?.get(segment)
@@ -97,7 +99,7 @@ fun SegmentScreen(viewModel: HelmetViewModel, segment: HelmetSegment, onOpen: (S
                 ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         SegmentDot(segmentState, size = 14.dp)
-                        Text(segment.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(segment.label.uppercase(), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -218,6 +220,10 @@ fun SegmentBrightnessScreen(viewModel: HelmetViewModel, segment: HelmetSegment) 
         enabled = connection == HelmetConnectionState.Ready && segmentState != null,
         onLevelChange = { viewModel.controller.setSegmentBrightness(segment, it) },
         currentLevel = { viewModel.controller.state.value?.get(segment)?.brightness ?: 0f },
+        ledColor = segmentState
+            ?.takeIf { it.effect.colorUse == ColorUse.Full }
+            ?.let { Color.hsv(it.hue * 360f, it.saturation, 1f) }
+            ?: Led.White,
     )
 }
 

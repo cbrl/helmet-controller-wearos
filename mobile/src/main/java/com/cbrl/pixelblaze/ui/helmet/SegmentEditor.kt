@@ -1,12 +1,13 @@
 package com.cbrl.pixelblaze.ui.helmet
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,6 +33,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -43,9 +45,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -55,6 +58,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.cbrl.pixelblaze.helmet.ColorUse
 import com.cbrl.pixelblaze.helmet.FadeSteps
 import com.cbrl.pixelblaze.helmet.HelmetController
@@ -65,15 +69,25 @@ import com.cbrl.pixelblaze.helmet.HelmetSegment
 import com.cbrl.pixelblaze.helmet.SegmentState
 import com.cbrl.pixelblaze.helmet.SpeedScale
 import com.cbrl.pixelblaze.helmet.percentLabel
-import com.cbrl.pixelblaze.ui.components.GradientSlider
 import com.cbrl.pixelblaze.ui.components.LabeledSlider
+import com.cbrl.pixelblaze.ui.components.LedFill
+import com.cbrl.pixelblaze.ui.components.LedSlider
+import com.cbrl.pixelblaze.ui.components.LedText
 import com.cbrl.pixelblaze.ui.components.SectionCard
+import com.cbrl.pixelblaze.ui.components.SectionLabel
 import com.cbrl.pixelblaze.ui.components.SliderHeader
-import com.cbrl.pixelblaze.ui.components.rainbowColors
+import com.cbrl.pixelblaze.ui.components.VisorPanel
+import com.cbrl.pixelblaze.ui.components.hairline
+import com.cbrl.pixelblaze.ui.components.lightChipBorder
+import com.cbrl.pixelblaze.ui.components.lightChipColors
+import com.cbrl.pixelblaze.ui.theme.HelmetText
+import com.cbrl.pixelblaze.ui.theme.Led
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private data class Swatch(val name: String, val hue: Float, val saturation: Float)
+private data class Swatch(val name: String, val hue: Float, val saturation: Float) {
+    val color: Color get() = Color.hsv(hue * 360f, saturation, 1f)
+}
 
 /** Colors that look clean on the LEDs. */
 private val Swatches = listOf(
@@ -109,6 +123,8 @@ fun SegmentEditor(
     modifier: Modifier = Modifier,
 ) {
     var pickingEffect by rememberSaveable { mutableStateOf(false) }
+    // Lit LEDs of the brightness meter show the segment color.
+    val ledColor = if (state.effect.colorUse == ColorUse.Full) Color.hsv(state.hue * 360f, state.saturation, 1f) else Led.White
 
     SectionCard(modifier) {
         EditorHeader(segment, state, layout, enabled) { controller.setSegmentEnabled(segment, it) }
@@ -131,6 +147,7 @@ fun SegmentEditor(
             value = state.brightness,
             onValueChange = { controller.setSegmentBrightness(segment, it) },
             enabled = enabled,
+            ledColor = { ledColor },
         )
         if (state.effect.usesSpeed) {
             SpeedControl(state.speed, enabled) { controller.setSegmentSpeed(segment, it) }
@@ -141,6 +158,7 @@ fun SegmentEditor(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             MessageField(
                 message = message,
+                ledColor = if (state.effect.colorUse == ColorUse.Full) ledColor else Led.Red,
                 showsMessage = state.effect == HelmetEffect.Text,
                 enabled = enabled,
                 onSend = controller::setMessage,
@@ -158,6 +176,7 @@ fun SegmentEditor(
         EffectPickerSheet(
             effects = HelmetEffect.availableFor(segment, layout),
             selected = state.effect,
+            color = Color.hsv(state.hue * 360f, state.saturation, 1f),
             onSelect = { controller.setSegmentEffect(segment, it) },
             onDismiss = { pickingEffect = false },
         )
@@ -172,59 +191,53 @@ private fun EditorHeader(
     enabled: Boolean,
     onEnabledChange: (Boolean) -> Unit,
 ) {
+    val colors = MaterialTheme.colorScheme
     Row(verticalAlignment = Alignment.CenterVertically) {
-        ColorOrb(state)
-        Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-            Text(segment.label, style = MaterialTheme.typography.titleLarge)
+        SegmentDot(state, size = 44.dp)
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text(segment.label.uppercase(), style = MaterialTheme.typography.headlineSmall)
             Text(
                 "${layout[segment].size} LEDs · ${if (state.on) "On" else "Off"}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = colors.onSurfaceVariant,
             )
         }
         Switch(
             checked = state.on,
             onCheckedChange = onEnabledChange,
             enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = colors.onPrimary,
+                checkedTrackColor = colors.primary,
+                checkedBorderColor = colors.primary,
+                uncheckedThumbColor = colors.onSurfaceVariant,
+                uncheckedTrackColor = colors.surfaceContainerHighest,
+                uncheckedBorderColor = colors.outline,
+            ),
             modifier = Modifier.semantics { contentDescription = "${segment.label} on" },
         )
     }
 }
 
-/** A glowing circle in the segment color. Effects that make their own hues show a rainbow. */
-@Composable
-private fun ColorOrb(state: SegmentState) {
-    val glow = if (state.effect.colorUse == ColorUse.Full) segmentColor(state) else MaterialTheme.colorScheme.primary
-    Box(
-        Modifier
-            .size(44.dp)
-            .shadow(if (state.on) 14.dp else 0.dp, CircleShape, ambientColor = glow, spotColor = glow)
-            .background(segmentBrush(state), CircleShape)
-            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape),
-    )
-}
-
 @Composable
 private fun EffectField(effect: HelmetEffect, enabled: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    val colors = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
         enabled = enabled,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.6f),
+        shape = shape,
+        color = colors.surfaceContainerLowest,
+        modifier = Modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.6f).hairline(shape),
     ) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(effect.category.icon, null, tint = MaterialTheme.colorScheme.tertiary)
+            Icon(effect.category.icon, null, tint = colors.onSurface)
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                Text(
-                    "Effect · ${effect.category.label}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                SectionLabel("Effect · ${effect.category.label}")
                 Text(effect.label, style = MaterialTheme.typography.titleMedium)
             }
-            Text("Change", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.primary)
+            Text("Change", style = MaterialTheme.typography.labelLarge, color = colors.primary)
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = colors.primary)
         }
     }
 }
@@ -236,16 +249,17 @@ private fun ColorControls(
     showHue: Boolean,
     update: ((SegmentState) -> SegmentState) -> Unit,
 ) {
-    val color = Color.hsv(state.hue * 360f, state.saturation, 1f)
+    val hueColor = Color.hsv(state.hue * 360f, 1f, 1f)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (showHue) {
             SliderHeader("Hue", "${(state.hue * 360f).roundToInt()}°")
-            GradientSlider(
+            LedSlider(
                 value = state.hue,
                 onValueChange = { hue -> update { it.copy(hue = hue.coerceAtMost(MAX_SLIDER_HUE)) } },
-                layers = listOf(Brush.horizontalGradient(rainbowColors())),
-                thumbColor = Color.hsv(state.hue * 360f, 1f, 1f),
                 enabled = enabled,
+                fill = LedFill.All,
+                thumbColor = hueColor,
+                ledColor = { Color.hsv(it * 360f, 1f, 1f) },
             )
         } else {
             Text(
@@ -256,27 +270,28 @@ private fun ColorControls(
         }
 
         SliderHeader("Saturation", percentLabel(state.saturation))
-        GradientSlider(
+        LedSlider(
             value = state.saturation,
             onValueChange = { saturation -> update { it.copy(saturation = saturation) } },
-            layers = if (showHue) {
-                listOf(Brush.horizontalGradient(listOf(Color.White, Color.hsv(state.hue * 360f, 1f, 1f))))
-            } else {
-                listOf(
-                    Brush.horizontalGradient(rainbowColors()),
-                    Brush.horizontalGradient(listOf(Color.White, Color.White.copy(alpha = 0f))),
-                )
-            },
-            thumbColor = if (showHue) color else Color.hsv(0f, state.saturation, 1f),
             enabled = enabled,
+            fill = LedFill.All,
+            thumbColor = Color.hsv(if (showHue) state.hue * 360f else 0f, state.saturation, 1f),
+            ledColor = { position ->
+                // Without a hue, the LEDs show how a rainbow fades to white.
+                lerp(Color.White, if (showHue) hueColor else Color.hsv(position * 360f, 1f, 1f), position)
+            },
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SaturationPresets.forEach { value ->
+                val selected = abs(state.saturation - value) < 0.005f
                 FilterChip(
-                    selected = abs(state.saturation - value) < 0.005f,
+                    selected = selected,
                     onClick = { update { it.copy(saturation = value) } },
                     enabled = enabled,
                     label = { Text(percentLabel(value)) },
+                    shape = CircleShape,
+                    colors = lightChipColors(),
+                    border = lightChipBorder(selected, enabled),
                 )
             }
         }
@@ -284,7 +299,7 @@ private fun ColorControls(
         if (showHue) {
             Row(
                 Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Swatches.forEach { swatch ->
                     val selected = abs(state.saturation - swatch.saturation) < 0.01f &&
@@ -305,6 +320,7 @@ private fun ColorControls(
     }
 }
 
+/** A swatch drawn as an LED. The selected LED glows inside a white ring. */
 @Composable
 private fun SwatchButton(
     swatch: Swatch,
@@ -313,10 +329,10 @@ private fun SwatchButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val ring = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline
+    val ring = MaterialTheme.colorScheme.primary
     Box(
         modifier
-            .heightIn(min = 40.dp)
+            .heightIn(min = 44.dp)
             .clip(RoundedCornerShape(12.dp))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics {
@@ -325,16 +341,21 @@ private fun SwatchButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Box(
+        Canvas(
             Modifier
-                .sizeIn(maxWidth = 36.dp, maxHeight = 36.dp)
+                .sizeIn(maxWidth = 38.dp, maxHeight = 38.dp)
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .alpha(if (enabled) 1f else 0.38f)
-                .border(if (selected) 2.dp else 1.dp, ring, CircleShape)
-                .padding(if (selected) 4.dp else 0.dp)
-                .background(Color.hsv(swatch.hue * 360f, swatch.saturation, 1f), CircleShape),
-        )
+                .alpha(if (enabled) 1f else 0.38f),
+        ) {
+            val radius = size.minDimension / 2f
+            val color = swatch.color
+            if (selected) {
+                drawCircle(Brush.radialGradient(listOf(color.copy(alpha = 0.6f), Color.Transparent), center, radius), radius)
+                drawCircle(ring, radius * 0.86f, style = Stroke(1.5.dp.toPx()))
+            }
+            drawCircle(color, radius * 0.6f)
+        }
     }
 }
 
@@ -368,11 +389,15 @@ private fun SpeedControl(speed: Float, enabled: Boolean, onSpeedChange: (Float) 
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             SpeedScale.SNAP_POINTS.forEach { point ->
+                val selected = speed == point
                 FilterChip(
-                    selected = speed == point,
+                    selected = selected,
                     onClick = { change(point) },
                     enabled = enabled,
                     label = { Text(SpeedScale.shortLabel(point)) },
+                    shape = CircleShape,
+                    colors = lightChipColors(),
+                    border = lightChipBorder(selected, enabled),
                 )
             }
         }
@@ -396,6 +421,7 @@ private fun FadeControl(seconds: Float, enabled: Boolean, onFadeChange: (Float) 
 @Composable
 private fun MessageField(
     message: String,
+    ledColor: Color,
     showsMessage: Boolean,
     enabled: Boolean,
     onSend: (String) -> Unit,
@@ -408,6 +434,20 @@ private fun MessageField(
         focusManager.clearFocus()
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // The message in LED dots, as the visor scrolls it.
+        VisorPanel(
+            Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+        ) {
+            LedText(
+                text.ifBlank { "No message" },
+                style = HelmetText.ledSmall.copy(fontSize = 24.sp, lineHeight = 26.sp),
+                color = if (text.isBlank()) MaterialTheme.colorScheme.outline else ledColor,
+                glow = text.isNotBlank(),
+                modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 0),
+            )
+        }
         OutlinedTextField(
             value = text,
             onValueChange = { text = HelmetMessage.sanitize(it) },

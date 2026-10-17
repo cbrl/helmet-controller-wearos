@@ -25,7 +25,6 @@ import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.Button
-import androidx.wear.compose.material3.CircularProgressIndicator
 import androidx.wear.compose.material3.FilledTonalButton
 import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.ListHeader
@@ -37,6 +36,7 @@ import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import com.cbrl.pixelblaze.device.PixelblazeEndpoint
 import com.cbrl.pixelblaze.helmet.HelmetViewModel
+import com.cbrl.pixelblaze.presentation.components.PyramidLoader
 import com.cbrl.pixelblaze.presentation.components.listItem
 import com.cbrl.pixelblaze.presentation.components.rememberTextInput
 
@@ -64,7 +64,7 @@ fun DevicesScreen(viewModel: HelmetViewModel, onDeviceChosen: () -> Unit) {
     ScreenScaffold(scrollState = listState) { contentPadding ->
         TransformingLazyColumn(state = listState, contentPadding = contentPadding) {
             item {
-                ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) { Text("Helmets") }
+                ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) { Text("HELMETS") }
             }
             item { NetworkLine(discovery.wifiConnected, searching = discovery.devices.isEmpty()) }
             discovery.errorMessage?.let { error ->
@@ -149,7 +149,7 @@ private fun NetworkLine(wifiConnected: Boolean, searching: Boolean) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (wifiConnected && searching) CircularProgressIndicator(Modifier.size(16.dp))
+        if (wifiConnected && searching) PyramidLoader(MaterialTheme.colorScheme.onSurface, size = 16.dp)
         Text(
             when {
                 !wifiConnected -> "No Wi-Fi network"

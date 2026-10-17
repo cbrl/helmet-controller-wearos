@@ -75,7 +75,7 @@ fun PresetsScreen(viewModel: HelmetViewModel) {
     ) { contentPadding ->
         TransformingLazyColumn(state = listState, contentPadding = contentPadding) {
             item {
-                ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) { Text("Presets") }
+                ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) { Text("PRESETS") }
             }
             if (presets.isEmpty()) {
                 item { Hint("No presets yet. Save the current look, or save one on the phone.") }

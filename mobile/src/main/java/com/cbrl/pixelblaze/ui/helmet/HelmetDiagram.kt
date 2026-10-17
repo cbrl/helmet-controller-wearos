@@ -9,8 +9,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
@@ -73,7 +75,8 @@ private const val LABEL_SPACE = 2.4f
 /**
  * Draws the helmet. When [frame] returns RGB bytes, the diagram shows those live pixels. Otherwise
  * it shows the color of each segment in [look]. [frame] is read only while drawing, so a new frame
- * redraws the diagram without a recomposition. [dotRadius] is in units of the LED pitch.
+ * redraws the diagram without a recomposition. [housings] draws the dark mounts behind the segments.
+ * [dotRadius] is in units of the LED pitch.
  */
 @Composable
 fun HelmetDiagram(
@@ -87,6 +90,7 @@ fun HelmetDiagram(
     onSegmentClick: ((HelmetSegment) -> Unit)? = null,
     showLabels: Boolean = false,
     glow: Boolean = true,
+    housings: Boolean = true,
     dotRadius: Float = 0.38f,
 ) {
     val geometry = remember(layout) { HelmetGeometry.of(layout) }
@@ -120,6 +124,13 @@ fun HelmetDiagram(
         val livePixels = pixels?.let { min(it.size / 3, geometry.pixels.size) } ?: 0
         val level = if (blackout) 0f else master
 
+        if (housings) {
+            HelmetSegment.entries.forEach { segment ->
+                val area = geometry.bounds(segment) ?: return@forEach
+                drawHousing(segment, area, transform)
+            }
+        }
+
         geometry.pixels.forEachIndexed { index, position ->
             val color = when {
                 index < livePixels -> LedColors.fromRgb(
@@ -136,21 +147,25 @@ fun HelmetDiagram(
                 else -> LedOff
             }
             val center = transform.toPixels(position)
-            if (glow && color != LedOff) drawCircle(color.copy(alpha = 0.22f), radius = unit * 0.85f, center = center)
+            if (color == LedOff) {
+                drawCircle(color, radius = unit * dotRadius, center = center)
+                return@forEachIndexed
+            }
+            if (glow) {
+                drawCircle(color.copy(alpha = 0.14f), radius = unit * 0.95f, center = center)
+                drawCircle(color.copy(alpha = 0.26f), radius = unit * 0.6f, center = center)
+            }
             drawCircle(color, radius = unit * dotRadius, center = center)
         }
 
         if (selected != null) {
             geometry.bounds(selected)?.let { area ->
-                val inset = 0.45f * unit
-                val topLeft = transform.toPixels(area.topLeft)
-                drawRoundRect(
-                    color = highlight,
-                    topLeft = topLeft - Offset(inset, inset),
-                    size = Size(area.width * unit + 2 * inset, area.height * unit + 2 * inset),
-                    cornerRadius = CornerRadius(unit * 1.1f),
-                    style = Stroke(width = 1.5.dp.toPx()),
-                )
+                val inset = 0.55f * unit
+                val topLeft = transform.toPixels(area.topLeft) - Offset(inset, inset)
+                val outline = Size(area.width * unit + 2 * inset, area.height * unit + 2 * inset)
+                val corner = CornerRadius(unit * 1.1f)
+                drawRoundRect(highlight.copy(alpha = 0.18f), topLeft, outline, corner, style = Stroke(width = 5.dp.toPx()))
+                drawRoundRect(highlight, topLeft, outline, corner, style = Stroke(width = 1.5.dp.toPx()))
             }
         }
 
@@ -164,6 +179,29 @@ fun HelmetDiagram(
             )
         }
     }
+}
+
+/**
+ * The dark mount behind a segment, with a hairline edge: a panel for the visor and the strips, and a
+ * round pod for each ear.
+ */
+private fun DrawScope.drawHousing(segment: HelmetSegment, area: Rect, transform: DiagramTransform) {
+    val unit = transform.scale
+    val edge = Color.White.copy(alpha = 0.1f)
+    val fill = Color(0xFF09090A)
+    if (segment == HelmetSegment.LeftEar || segment == HelmetSegment.RightEar) {
+        val center = transform.toPixels(area.center)
+        val radius = (maxOf(area.width, area.height) / 2f + 0.35f) * unit
+        drawCircle(fill, radius, center)
+        drawCircle(edge, radius, center, style = Stroke(1.dp.toPx()))
+        return
+    }
+    val inset = 0.3f * unit
+    val topLeft = transform.toPixels(area.topLeft) - Offset(inset, inset)
+    val box = Size(area.width * unit + 2 * inset, area.height * unit + 2 * inset)
+    val corner = CornerRadius(if (segment == HelmetSegment.Visor) unit * 1.4f else box.width / 2f)
+    drawRoundRect(fill, topLeft, box, corner)
+    drawRoundRect(edge, topLeft, box, corner, style = Stroke(1.dp.toPx()))
 }
 
 /** Scales diagram units to fit a canvas, and centers the diagram. */

@@ -7,7 +7,9 @@ plugins {
 
 android {
     namespace = "com.cbrl.pixelblaze"
-    compileSdk = 35
+    compileSdk {
+        version = release(37) { minorApiLevel = 1 }
+    }
 
     defaultConfig {
         applicationId = "com.cbrl.pixelblaze"
@@ -49,7 +51,6 @@ dependencies {
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
-    implementation(libs.androidx.ui.text.google.fonts)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.activity.compose)

@@ -1,31 +1,35 @@
 package com.cbrl.pixelblaze.ui.components
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.cbrl.pixelblaze.ui.theme.HelmetText
+import com.cbrl.pixelblaze.ui.theme.Led
+import kotlin.math.max
+import kotlin.math.roundToInt
 
-/** The label and the current value above a slider. */
+/** The label and the current value above a slider. The value shows in LED dots. */
 @Composable
 fun SliderHeader(
     label: String,
@@ -34,15 +38,16 @@ fun SliderHeader(
     trailing: @Composable () -> Unit = {},
 ) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
         trailing()
-        Text(valueLabel, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        LedText(valueLabel, HelmetText.ledSmall, MaterialTheme.colorScheme.onSurface, glow = false)
     }
 }
 
 /**
- * A slider with a label. [onValueChange] runs for each move during a drag, so the helmet follows the
- * finger.
+ * A slider with a label, drawn as a row of LEDs that light up to the value. [onValueChange] runs
+ * for each move during a drag, so the helmet follows the finger. With [steps], each value has one
+ * LED. [ledColor] gives the color of a lit LED at a position from 0 to 1.
  */
 @Composable
 fun LabeledSlider(
@@ -55,66 +60,145 @@ fun LabeledSlider(
     valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
     steps: Int = 0,
     onValueChangeFinished: (() -> Unit)? = null,
+    ledColor: (Float) -> Color = { Led.White },
 ) {
-    val colors = MaterialTheme.colorScheme
     Column(modifier) {
         SliderHeader(label, valueLabel)
-        Slider(
+        LedSlider(
             value = value,
             onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth(),
             enabled = enabled,
             valueRange = valueRange,
             steps = steps,
             onValueChangeFinished = onValueChangeFinished,
-            // The default inactive track is the secondary container (magenta), which competes with the value.
-            colors = SliderDefaults.colors(
-                inactiveTrackColor = colors.surfaceContainerHighest,
-                inactiveTickColor = colors.onSurfaceVariant,
-            ),
+            fill = LedFill.UpToValue,
+            ledColor = ledColor,
         )
     }
 }
 
-/**
- * A slider with a painted track, for hue and saturation. The [layers] paint the track from bottom
- * to top, and the thumb shows [thumbColor].
- */
+/** Which LEDs of a [LedTrack] are lit. */
+enum class LedFill {
+    /** The LEDs up to the value, as on a level meter. */
+    UpToValue,
+
+    /** All LEDs, as a scale such as the hues. The thumb marks the value. */
+    All,
+}
+
+/** A [Slider] with a [LedTrack] and a light thumb. A [thumbColor] shows a color thumb instead. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GradientSlider(
+fun LedSlider(
     value: Float,
     onValueChange: (Float) -> Unit,
-    layers: List<Brush>,
-    thumbColor: Color,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    steps: Int = 0,
+    onValueChangeFinished: (() -> Unit)? = null,
+    fill: LedFill = LedFill.UpToValue,
+    thumbColor: Color? = null,
+    ledColor: (Float) -> Color = { Led.White },
 ) {
-    val outline = MaterialTheme.colorScheme.outline
     Slider(
         value = value,
         onValueChange = onValueChange,
-        modifier = modifier.fillMaxWidth().alpha(if (enabled) 1f else 0.38f),
+        modifier = modifier.fillMaxWidth(),
         enabled = enabled,
-        thumb = {
-            Box(
-                Modifier
-                    .size(28.dp)
-                    .shadow(4.dp, CircleShape)
-                    .background(thumbColor, CircleShape)
-                    .border(3.dp, Color.White, CircleShape),
+        valueRange = valueRange,
+        steps = steps,
+        onValueChangeFinished = onValueChangeFinished,
+        thumb = { if (thumbColor != null) ColorThumb(thumbColor, enabled) else LightThumb(enabled) },
+        track = { state ->
+            LedTrack(
+                fraction = state.fraction,
+                fill = fill,
+                ledCount = if (steps > 0) steps + 2 else null,
+                enabled = enabled,
+                ledColor = ledColor,
             )
         },
-        track = {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(16.dp)
-                    .clip(CircleShape)
-                    .drawBehind { layers.forEach { drawRect(it) } }
-                    .border(1.dp, outline, CircleShape),
-            )
-        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+private val SliderState.fraction: Float
+    get() {
+        val span = valueRange.endInclusive - valueRange.start
+        return if (span <= 0f) 0f else ((value - valueRange.start) / span).coerceIn(0f, 1f)
+    }
+
+/**
+ * A row of LEDs. [ledCount] gives one LED for each value of a stepped control; without it, the
+ * row fits as many LEDs as the width allows.
+ */
+@Composable
+fun LedTrack(
+    fraction: Float,
+    fill: LedFill,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    ledCount: Int? = null,
+    ledColor: (Float) -> Color = { Led.White },
+) {
+    Canvas(modifier.fillMaxWidth().height(24.dp).alpha(if (enabled) 1f else 0.4f)) {
+        val gap = 3.dp.toPx()
+        val count = ledCount ?: max(8, ((size.width + gap) / 11.dp.toPx()).toInt())
+        val ledWidth = (size.width - gap * (count - 1)) / count
+        val ledHeight = 8.dp.toPx()
+        val top = (size.height - ledHeight) / 2f
+        val corner = CornerRadius(1.5.dp.toPx())
+        val halo = 2.dp.toPx()
+        val litIndex = (fraction * (count - 1)).roundToInt()
+        for (index in 0 until count) {
+            val position = if (count == 1) 0f else index / (count - 1f)
+            val lit = when {
+                fill == LedFill.All -> true
+                ledCount != null -> index <= litIndex
+                else -> (index + 0.5f) / count < fraction
+            }
+            val left = index * (ledWidth + gap)
+            if (!lit) {
+                drawRoundRect(Led.Off, Offset(left, top), Size(ledWidth, ledHeight), corner)
+                continue
+            }
+            val color = ledColor(position)
+            if (fill == LedFill.UpToValue) {
+                // A soft glow around a lit LED of a meter.
+                drawRoundRect(
+                    color.copy(alpha = 0.18f),
+                    Offset(left - halo, top - halo),
+                    Size(ledWidth + 2 * halo, ledHeight + 2 * halo),
+                    CornerRadius(corner.x + halo),
+                )
+            }
+            drawRoundRect(color, Offset(left, top), Size(ledWidth, ledHeight), corner)
+        }
+    }
+}
+
+/** A thin bar of stage white. */
+@Composable
+fun LightThumb(enabled: Boolean) {
+    Box(
+        Modifier
+            .size(width = 6.dp, height = 28.dp)
+            .background(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape),
+    )
+}
+
+/** The current color inside a white ring. */
+@Composable
+fun ColorThumb(color: Color, enabled: Boolean) {
+    Box(
+        Modifier
+            .size(26.dp)
+            .background(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape)
+            .padding(3.dp)
+            .background(Color.Black, CircleShape)
+            .padding(2.dp)
+            .background(if (enabled) color else color.copy(alpha = 0.4f), CircleShape),
     )
 }
 

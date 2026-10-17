@@ -1,6 +1,6 @@
 package com.cbrl.pixelblaze.ui.presets
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,11 +25,9 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,9 +61,10 @@ import com.cbrl.pixelblaze.helmet.HelmetPresets
 import com.cbrl.pixelblaze.helmet.HelmetSegment
 import com.cbrl.pixelblaze.helmet.HelmetViewModel
 import com.cbrl.pixelblaze.ui.components.SectionShape
+import com.cbrl.pixelblaze.ui.components.VisorPanel
+import com.cbrl.pixelblaze.ui.components.panel
 import com.cbrl.pixelblaze.ui.components.showMessage
 import com.cbrl.pixelblaze.ui.helmet.HelmetDiagram
-import com.cbrl.pixelblaze.ui.theme.DiagramPanel
 
 @Composable
 fun PresetsScreen(viewModel: HelmetViewModel, snackbar: SnackbarHostState) {
@@ -89,14 +88,14 @@ fun PresetsScreen(viewModel: HelmetViewModel, snackbar: SnackbarHostState) {
         item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Presets", style = MaterialTheme.typography.headlineSmall)
+                    Text("PRESETS", style = MaterialTheme.typography.headlineSmall)
                     Text(
                         "${presets.size} of ${HelmetPresets.MAX_PRESETS} · synced with the watch",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                FilledTonalButton(
+                Button(
                     onClick = { creating = true },
                     enabled = state != null && presets.size < HelmetPresets.MAX_PRESETS,
                 ) {
@@ -197,23 +196,20 @@ private fun PresetCard(
     val summary = look[HelmetSegment.Visor].effect.label +
         if (onCount < HelmetSegment.entries.size) " · $onCount/${HelmetSegment.entries.size} on" else ""
 
-    Card(
-        onClick = onLoad,
-        shape = SectionShape,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    Column(
+        Modifier
+            .panel(SectionShape)
+            .clickable(onClickLabel = "Show ${preset.name}", onClick = onLoad),
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 8.dp, end = 8.dp, top = 8.dp)
-                .background(DiagramPanel, RoundedCornerShape(16.dp))
-                .padding(horizontal = 6.dp, vertical = 10.dp),
+        VisorPanel(
+            Modifier.fillMaxWidth().padding(start = 6.dp, end = 6.dp, top = 6.dp),
+            shape = RoundedCornerShape(19.dp),
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 12.dp),
         ) {
             HelmetDiagram(
                 layout = HelmetLayout.Default,
                 look = look,
                 modifier = Modifier.fillMaxWidth(),
-                glow = false,
                 dotRadius = 0.42f,
             )
         }
@@ -264,16 +260,13 @@ private fun PresetCard(
 
 @Composable
 private fun EmptyPresets() {
-    Card(
-        shape = SectionShape,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-    ) {
+    Box(Modifier.panel(SectionShape)) {
         Column(
             Modifier.fillMaxWidth().padding(28.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(Icons.Filled.Bookmarks, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Filled.Bookmarks, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("No presets yet", style = MaterialTheme.typography.titleMedium)
             Text(
                 "Make a look on the Helmet tab, then save it here. A preset stores every segment and the message.",

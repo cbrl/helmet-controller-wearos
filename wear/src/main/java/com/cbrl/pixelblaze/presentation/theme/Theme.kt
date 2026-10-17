@@ -2,76 +2,116 @@ package com.cbrl.pixelblaze.presentation.theme
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material3.ColorScheme
 import androidx.wear.compose.material3.MaterialTheme
-
-/** The neon palette of the phone app, as ARGB values for the Compose theme and for the tile. */
-object HelmetPalette {
-    const val PRIMARY = 0xFF4DE7FF
-    const val PRIMARY_DIM = 0xFF2FBFD6
-    const val PRIMARY_CONTAINER = 0xFF004E59
-    const val ON_PRIMARY = 0xFF00363E
-    const val ON_PRIMARY_CONTAINER = 0xFF9CF0FF
-    const val SECONDARY = 0xFFFF5AC8
-    const val SECONDARY_DIM = 0xFFD9479F
-    const val SECONDARY_CONTAINER = 0xFF672052
-    const val ON_SECONDARY = 0xFF3E002D
-    const val ON_SECONDARY_CONTAINER = 0xFFFFD8EE
-    const val TERTIARY = 0xFFFFB44D
-    const val TERTIARY_DIM = 0xFFD9963A
-    const val TERTIARY_CONTAINER = 0xFF5C3B00
-    const val ON_TERTIARY = 0xFF452B00
-    const val ON_TERTIARY_CONTAINER = 0xFFFFDDB3
-    const val SURFACE_CONTAINER_LOW = 0xFF10131A
-    const val SURFACE_CONTAINER = 0xFF151922
-    const val SURFACE_CONTAINER_HIGH = 0xFF1C222D
-    const val ON_SURFACE = 0xFFF2F5FF
-    const val ON_SURFACE_VARIANT = 0xFFADB8C8
-    const val OUTLINE = 0xFF46515F
-    const val OUTLINE_VARIANT = 0xFF2A323E
-    const val BACKGROUND = 0xFF000000
-    const val ON_BACKGROUND = 0xFFF2F5FF
-    const val ERROR = 0xFFFF6B72
-    const val ERROR_DIM = 0xFFD9535A
-    const val ERROR_CONTAINER = 0xFF5C1A20
-    const val ON_ERROR = 0xFF400006
-    const val ON_ERROR_CONTAINER = 0xFFFFDAD8
-}
+import androidx.wear.compose.material3.Typography
+import com.cbrl.pixelblaze.design.HelmetPalette
+import com.cbrl.pixelblaze.core.R as CoreR
 
 private val HelmetColorScheme = ColorScheme(
-    primary = Color(HelmetPalette.PRIMARY),
-    primaryDim = Color(HelmetPalette.PRIMARY_DIM),
-    primaryContainer = Color(HelmetPalette.PRIMARY_CONTAINER),
-    onPrimary = Color(HelmetPalette.ON_PRIMARY),
-    onPrimaryContainer = Color(HelmetPalette.ON_PRIMARY_CONTAINER),
-    secondary = Color(HelmetPalette.SECONDARY),
-    secondaryDim = Color(HelmetPalette.SECONDARY_DIM),
-    secondaryContainer = Color(HelmetPalette.SECONDARY_CONTAINER),
-    onSecondary = Color(HelmetPalette.ON_SECONDARY),
-    onSecondaryContainer = Color(HelmetPalette.ON_SECONDARY_CONTAINER),
-    tertiary = Color(HelmetPalette.TERTIARY),
-    tertiaryDim = Color(HelmetPalette.TERTIARY_DIM),
-    tertiaryContainer = Color(HelmetPalette.TERTIARY_CONTAINER),
-    onTertiary = Color(HelmetPalette.ON_TERTIARY),
-    onTertiaryContainer = Color(HelmetPalette.ON_TERTIARY_CONTAINER),
-    surfaceContainerLow = Color(HelmetPalette.SURFACE_CONTAINER_LOW),
-    surfaceContainer = Color(HelmetPalette.SURFACE_CONTAINER),
-    surfaceContainerHigh = Color(HelmetPalette.SURFACE_CONTAINER_HIGH),
+    primary = Color(HelmetPalette.LIGHT),
+    primaryDim = Color(HelmetPalette.LIGHT_DIM),
+    primaryContainer = Color(HelmetPalette.GRAPHITE),
+    onPrimary = Color(HelmetPalette.ON_LIGHT),
+    onPrimaryContainer = Color(HelmetPalette.ON_GRAPHITE),
+    secondary = Color(HelmetPalette.LIGHT_DIM),
+    secondaryDim = Color(HelmetPalette.MUTED),
+    secondaryContainer = Color(HelmetPalette.GRAPHITE),
+    onSecondary = Color(HelmetPalette.ON_LIGHT),
+    onSecondaryContainer = Color(HelmetPalette.ON_GRAPHITE),
+    tertiary = Color(HelmetPalette.LED_AMBER),
+    tertiaryDim = Color(HelmetPalette.LED_AMBER_DIM),
+    tertiaryContainer = Color(HelmetPalette.LED_AMBER_CONTAINER),
+    onTertiary = Color(HelmetPalette.ON_LED_AMBER),
+    onTertiaryContainer = Color(HelmetPalette.ON_LED_AMBER_CONTAINER),
+    surfaceContainerLow = Color(HelmetPalette.SURFACE_HIGH),
+    surfaceContainer = Color(HelmetPalette.SURFACE_HIGHEST),
+    surfaceContainerHigh = Color(HelmetPalette.GRAPHITE),
     onSurface = Color(HelmetPalette.ON_SURFACE),
-    onSurfaceVariant = Color(HelmetPalette.ON_SURFACE_VARIANT),
+    onSurfaceVariant = Color(HelmetPalette.MUTED),
     outline = Color(HelmetPalette.OUTLINE),
     outlineVariant = Color(HelmetPalette.OUTLINE_VARIANT),
-    background = Color(HelmetPalette.BACKGROUND),
-    onBackground = Color(HelmetPalette.ON_BACKGROUND),
-    error = Color(HelmetPalette.ERROR),
-    errorDim = Color(HelmetPalette.ERROR_DIM),
-    errorContainer = Color(HelmetPalette.ERROR_CONTAINER),
-    onError = Color(HelmetPalette.ON_ERROR),
-    onErrorContainer = Color(HelmetPalette.ON_ERROR_CONTAINER),
+    background = Color(HelmetPalette.BLACK),
+    onBackground = Color(HelmetPalette.ON_SURFACE),
+    error = Color(HelmetPalette.LED_RED),
+    errorDim = Color(HelmetPalette.LED_RED_DIM),
+    errorContainer = Color(HelmetPalette.LED_RED_CONTAINER),
+    onError = Color(HelmetPalette.ON_LED_RED),
+    onErrorContainer = Color(HelmetPalette.ON_LED_RED_CONTAINER),
 )
+
+/** LED colors outside the Material roles. */
+object Led {
+    val Off = Color(HelmetPalette.LED_OFF)
+    val Red = Color(HelmetPalette.LED_RED)
+    val Amber = Color(HelmetPalette.LED_AMBER)
+    val Green = Color(HelmetPalette.LED_GREEN)
+    val White = Color(0xFFF4F6F9)
+}
+
+private fun dotoWeight(weight: Int) = FontVariation.Settings(FontVariation.weight(weight), FontVariation.Setting("ROND", 100f))
+
+/** Round LED dots, as on the visor. For the wordmark and for large values. */
+val LedFamily = FontFamily(
+    Font(CoreR.font.doto, FontWeight.Bold, variationSettings = dotoWeight(700)),
+    Font(CoreR.font.doto, FontWeight.Black, variationSettings = dotoWeight(900)),
+)
+
+/** Wide capitals, for headings. */
+val WideFamily = FontFamily(Font(CoreR.font.michroma, FontWeight.Normal))
+
+/** The text face for everything else. */
+val TextFamily = FontFamily(
+    Font(CoreR.font.space_grotesk, FontWeight.Normal, variationSettings = FontVariation.Settings(FontVariation.weight(400))),
+    Font(CoreR.font.space_grotesk, FontWeight.Medium, variationSettings = FontVariation.Settings(FontVariation.weight(500))),
+    Font(CoreR.font.space_grotesk, FontWeight.SemiBold, variationSettings = FontVariation.Settings(FontVariation.weight(600))),
+    Font(CoreR.font.space_grotesk, FontWeight.Bold, variationSettings = FontVariation.Settings(FontVariation.weight(700))),
+)
+
+/** Text styles outside the Material type scale. */
+object HelmetText {
+    /** The app name at the top of the home screen. */
+    val wordmark = TextStyle(fontFamily = LedFamily, fontWeight = FontWeight.Black, fontSize = 24.sp, lineHeight = 26.sp, letterSpacing = 1.5.sp)
+
+    /** A short label in wide capitals. */
+    val caps = TextStyle(fontFamily = WideFamily, fontSize = 9.sp, lineHeight = 13.sp, letterSpacing = 1.sp)
+}
+
+private val HelmetTypography = Typography().run {
+    fun TextStyle.text(weight: FontWeight) = copy(fontFamily = TextFamily, fontWeight = weight)
+    fun TextStyle.wide(size: TextUnit) = copy(fontFamily = WideFamily, fontWeight = FontWeight.Normal, fontSize = size)
+    fun TextStyle.led() = copy(fontFamily = LedFamily, fontWeight = FontWeight.Black)
+    copy(
+        displayLarge = displayLarge.text(FontWeight.SemiBold),
+        displayMedium = displayMedium.text(FontWeight.SemiBold),
+        displaySmall = displaySmall.text(FontWeight.SemiBold),
+        titleLarge = titleLarge.wide(15.sp),
+        titleMedium = titleMedium.wide(13.sp),
+        titleSmall = titleSmall.wide(11.sp),
+        labelLarge = labelLarge.text(FontWeight.SemiBold),
+        labelMedium = labelMedium.text(FontWeight.SemiBold),
+        labelSmall = labelSmall.text(FontWeight.Medium),
+        bodyLarge = bodyLarge.text(FontWeight.Normal),
+        bodyMedium = bodyMedium.text(FontWeight.Normal),
+        bodySmall = bodySmall.text(FontWeight.Normal),
+        bodyExtraSmall = bodyExtraSmall.text(FontWeight.Normal),
+        numeralExtraLarge = numeralExtraLarge.led(),
+        numeralLarge = numeralLarge.led(),
+        numeralMedium = numeralMedium.led(),
+        numeralSmall = numeralSmall.led(),
+        numeralExtraSmall = numeralExtraSmall.led(),
+    )
+}
 
 /** Apply once, at the root of the app. */
 @Composable
 fun PixelblazeTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = HelmetColorScheme, content = content)
+    MaterialTheme(colorScheme = HelmetColorScheme, typography = HelmetTypography, content = content)
 }

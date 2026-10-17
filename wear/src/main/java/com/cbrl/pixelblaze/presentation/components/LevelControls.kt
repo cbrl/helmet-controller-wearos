@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalContext
@@ -26,6 +27,8 @@ import androidx.wear.compose.material3.Stepper
 import androidx.wear.compose.material3.StepperLevelIndicator
 import androidx.wear.compose.material3.Text
 import com.cbrl.pixelblaze.helmet.percentLabel
+import com.cbrl.pixelblaze.presentation.theme.HelmetText
+import com.cbrl.pixelblaze.presentation.theme.Led
 import kotlin.math.roundToInt
 import kotlin.math.sign
 
@@ -46,7 +49,7 @@ fun snapLevel(value: Float): Float =
  * level in steps of 5 %. Each change goes to the helmet at once.
  *
  * [currentLevel] reads the level without waiting for a recomposition, so that fast crown turns
- * do not lose steps.
+ * do not lose steps. The level shows in LED dots of [ledColor].
  */
 @Composable
 fun LevelScreen(
@@ -55,6 +58,7 @@ fun LevelScreen(
     enabled: Boolean,
     onLevelChange: (Float) -> Unit,
     currentLevel: () -> Float = { level },
+    ledColor: Color = Led.White,
 ) {
     val haptics = LocalHapticFeedback.current
     val rotary = rememberRotarySteps()
@@ -88,13 +92,18 @@ fun LevelScreen(
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    title,
-                    style = MaterialTheme.typography.labelMedium,
+                    title.uppercase(),
+                    style = HelmetText.caps,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(percentLabel(level), style = MaterialTheme.typography.numeralMedium)
+                LedText(
+                    percentLabel(level),
+                    style = MaterialTheme.typography.numeralMedium,
+                    color = if (enabled && level > 0f) ledColor else MaterialTheme.colorScheme.outline,
+                    glow = enabled && level > 0f,
+                )
             }
         }
     }

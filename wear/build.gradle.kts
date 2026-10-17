@@ -7,7 +7,9 @@ plugins {
 
 android {
     namespace = "com.cbrl.pixelblaze"
-    compileSdk = 35
+    compileSdk {
+        version = release(37) { minorApiLevel = 1 }
+    }
 
     defaultConfig {
         applicationId = "com.cbrl.pixelblaze"

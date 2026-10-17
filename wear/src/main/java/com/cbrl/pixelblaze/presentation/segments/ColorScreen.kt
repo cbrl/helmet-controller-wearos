@@ -1,24 +1,23 @@
 package com.cbrl.pixelblaze.presentation.segments
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -26,7 +25,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
-import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.ListHeader
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
@@ -74,7 +72,7 @@ fun ColorScreen(viewModel: HelmetViewModel, segment: HelmetSegment) {
         TransformingLazyColumn(state = listState, contentPadding = contentPadding) {
             item {
                 ListHeader(Modifier.listItem(this, spec), transformation = SurfaceTransformation(spec)) {
-                    Text("${segment.shortLabel} ${if (fullColor) "color" else "saturation"}")
+                    Text("${segment.shortLabel} ${if (fullColor) "color" else "saturation"}".uppercase())
                 }
             }
             if (segmentState == null) {
@@ -134,21 +132,24 @@ private fun Swatches(state: SegmentState, enabled: Boolean, onPick: (Swatch) -> 
                 row.forEach { swatch ->
                     val selected = abs(swatch.saturation - state.saturation) < 0.01f &&
                         (swatch.saturation == 0f || abs(swatch.hue - state.hue) < 0.005f)
-                    Box(
+                    val ring = MaterialTheme.colorScheme.primary
+                    Canvas(
                         Modifier
                             .size(44.dp)
                             .clip(CircleShape)
-                            .background(swatch.color)
-                            .border(
-                                width = if (selected) 3.dp else 1.dp,
-                                color = if (selected) Color.White else Color.White.copy(alpha = 0.25f),
-                                shape = CircleShape,
-                            )
-                            .semantics { this.selected = selected }
+                            .semantics {
+                                this.selected = selected
+                                contentDescription = swatch.name
+                            }
                             .clickable(enabled = enabled, onClickLabel = swatch.name, role = Role.Button) { onPick(swatch) },
-                        contentAlignment = Alignment.Center,
                     ) {
-                        if (selected) Icon(Icons.Rounded.Check, contentDescription = swatch.name, tint = Color.Black)
+                        // Each swatch is an LED. The selected one glows inside a white ring.
+                        val radius = size.minDimension / 2f
+                        if (selected) {
+                            drawCircle(Brush.radialGradient(listOf(swatch.color.copy(alpha = 0.6f), Color.Transparent), center, radius), radius)
+                            drawCircle(ring, radius - 1.dp.toPx(), style = Stroke(2.dp.toPx()))
+                        }
+                        drawCircle(swatch.color, radius * 0.58f)
                     }
                 }
             }

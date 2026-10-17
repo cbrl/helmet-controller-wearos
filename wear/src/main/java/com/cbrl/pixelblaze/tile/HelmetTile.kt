@@ -23,10 +23,10 @@ import androidx.wear.protolayout.types.argb
 import androidx.wear.protolayout.types.layoutString
 import androidx.wear.tiles.TileService
 import com.cbrl.pixelblaze.data.HelmetPreferences
+import com.cbrl.pixelblaze.design.HelmetPalette
 import com.cbrl.pixelblaze.helmet.HelmetAction
 import com.cbrl.pixelblaze.helmet.HelmetPresets
 import com.cbrl.pixelblaze.presentation.MainActivity
-import com.cbrl.pixelblaze.presentation.theme.HelmetPalette
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -64,36 +64,37 @@ object HelmetTile {
         }
     }
 
+    /** The colors of the app: chrome buttons, black glass, and a red LED for Blackout. */
     val colorScheme = ColorScheme(
-        primary = HelmetPalette.PRIMARY.argb,
-        primaryDim = HelmetPalette.PRIMARY_DIM.argb,
-        primaryContainer = HelmetPalette.PRIMARY_CONTAINER.argb,
-        onPrimary = HelmetPalette.ON_PRIMARY.argb,
-        onPrimaryContainer = HelmetPalette.ON_PRIMARY_CONTAINER.argb,
-        secondary = HelmetPalette.SECONDARY.argb,
-        secondaryDim = HelmetPalette.SECONDARY_DIM.argb,
-        secondaryContainer = HelmetPalette.SECONDARY_CONTAINER.argb,
-        onSecondary = HelmetPalette.ON_SECONDARY.argb,
-        onSecondaryContainer = HelmetPalette.ON_SECONDARY_CONTAINER.argb,
-        tertiary = HelmetPalette.TERTIARY.argb,
-        tertiaryDim = HelmetPalette.TERTIARY_DIM.argb,
-        tertiaryContainer = HelmetPalette.TERTIARY_CONTAINER.argb,
-        onTertiary = HelmetPalette.ON_TERTIARY.argb,
-        onTertiaryContainer = HelmetPalette.ON_TERTIARY_CONTAINER.argb,
-        surfaceContainerLow = HelmetPalette.SURFACE_CONTAINER_LOW.argb,
-        surfaceContainer = HelmetPalette.SURFACE_CONTAINER.argb,
-        surfaceContainerHigh = HelmetPalette.SURFACE_CONTAINER_HIGH.argb,
+        primary = HelmetPalette.LIGHT.argb,
+        primaryDim = HelmetPalette.LIGHT_DIM.argb,
+        primaryContainer = HelmetPalette.GRAPHITE.argb,
+        onPrimary = HelmetPalette.ON_LIGHT.argb,
+        onPrimaryContainer = HelmetPalette.ON_GRAPHITE.argb,
+        secondary = HelmetPalette.LIGHT_DIM.argb,
+        secondaryDim = HelmetPalette.MUTED.argb,
+        secondaryContainer = HelmetPalette.GRAPHITE.argb,
+        onSecondary = HelmetPalette.ON_LIGHT.argb,
+        onSecondaryContainer = HelmetPalette.ON_GRAPHITE.argb,
+        tertiary = HelmetPalette.LED_AMBER.argb,
+        tertiaryDim = HelmetPalette.LED_AMBER_DIM.argb,
+        tertiaryContainer = HelmetPalette.LED_AMBER_CONTAINER.argb,
+        onTertiary = HelmetPalette.ON_LED_AMBER.argb,
+        onTertiaryContainer = HelmetPalette.ON_LED_AMBER_CONTAINER.argb,
+        surfaceContainerLow = HelmetPalette.SURFACE_MID.argb,
+        surfaceContainer = HelmetPalette.SURFACE_HIGH.argb,
+        surfaceContainerHigh = HelmetPalette.SURFACE_HIGHEST.argb,
         onSurface = HelmetPalette.ON_SURFACE.argb,
-        onSurfaceVariant = HelmetPalette.ON_SURFACE_VARIANT.argb,
+        onSurfaceVariant = HelmetPalette.MUTED.argb,
         outline = HelmetPalette.OUTLINE.argb,
         outlineVariant = HelmetPalette.OUTLINE_VARIANT.argb,
-        background = HelmetPalette.BACKGROUND.argb,
-        onBackground = HelmetPalette.ON_BACKGROUND.argb,
-        error = HelmetPalette.ERROR.argb,
-        errorDim = HelmetPalette.ERROR_DIM.argb,
-        errorContainer = HelmetPalette.ERROR_CONTAINER.argb,
-        onError = HelmetPalette.ON_ERROR.argb,
-        onErrorContainer = HelmetPalette.ON_ERROR_CONTAINER.argb,
+        background = HelmetPalette.BLACK.argb,
+        onBackground = HelmetPalette.ON_SURFACE.argb,
+        error = HelmetPalette.LED_RED.argb,
+        errorDim = HelmetPalette.LED_RED_DIM.argb,
+        errorContainer = HelmetPalette.LED_RED_CONTAINER.argb,
+        onError = HelmetPalette.ON_LED_RED.argb,
+        onErrorContainer = HelmetPalette.ON_LED_RED_CONTAINER.argb,
     )
 
     /**

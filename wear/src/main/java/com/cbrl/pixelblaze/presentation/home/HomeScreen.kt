@@ -1,18 +1,19 @@
 package com.cbrl.pixelblaze.presentation.home
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.BrightnessMedium
-import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.TextFields
@@ -21,24 +22,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumnItemScope
 import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.ButtonDefaults
-import androidx.wear.compose.material3.CircularProgressIndicator
 import androidx.wear.compose.material3.CompactButton
 import androidx.wear.compose.material3.FilledTonalButton
 import androidx.wear.compose.material3.Icon
@@ -48,20 +52,33 @@ import androidx.wear.compose.material3.SurfaceTransformation
 import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.lazy.TransformationSpec
 import androidx.wear.compose.material3.lazy.rememberTransformationSpec
+import androidx.wear.compose.material3.onehandedgesture.OneHandedGestureAction
+import androidx.wear.compose.material3.onehandedgesture.OneHandedGestureClickIndicator
+import androidx.wear.compose.material3.onehandedgesture.OneHandedGestureClickIndicatorState
+import androidx.wear.compose.material3.onehandedgesture.oneHandedGesture
+import androidx.wear.compose.material3.onehandedgesture.rememberOneHandedGestureConfiguration
 import com.cbrl.pixelblaze.device.PixelblazeEndpoint
 import com.cbrl.pixelblaze.helmet.HelmetAction
 import com.cbrl.pixelblaze.helmet.HelmetConnectionState
 import com.cbrl.pixelblaze.helmet.HelmetEffect
 import com.cbrl.pixelblaze.helmet.HelmetPreset
 import com.cbrl.pixelblaze.helmet.HelmetSegment
+import com.cbrl.pixelblaze.helmet.HelmetState
 import com.cbrl.pixelblaze.helmet.HelmetViewModel
 import com.cbrl.pixelblaze.helmet.percentLabel
 import com.cbrl.pixelblaze.presentation.Routes
+import com.cbrl.pixelblaze.presentation.components.EarPanelMark
+import com.cbrl.pixelblaze.presentation.components.LedText
 import com.cbrl.pixelblaze.presentation.components.LevelScreen
+import com.cbrl.pixelblaze.presentation.components.PyramidLoader
 import com.cbrl.pixelblaze.presentation.components.StatusDot
 import com.cbrl.pixelblaze.presentation.components.connectionStatus
 import com.cbrl.pixelblaze.presentation.components.listItem
 import com.cbrl.pixelblaze.presentation.components.rememberTextInput
+import com.cbrl.pixelblaze.presentation.components.visorInk
+import com.cbrl.pixelblaze.presentation.theme.HelmetText
+import com.cbrl.pixelblaze.presentation.theme.Led
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(viewModel: HelmetViewModel, onOpen: (String) -> Unit) {
@@ -91,6 +108,7 @@ fun HomeScreen(viewModel: HelmetViewModel, onOpen: (String) -> Unit) {
             item(key = "header") {
                 val connectionStatus = connectionStatus(connection, device != null)
                 HomeHeader(
+                    state = state,
                     label = listOfNotNull(connectionStatus.label, status?.info?.name ?: device?.displayId)
                         .joinToString(" · "),
                     dot = { StatusDot(connectionStatus.color, pulsing = connectionStatus.busy) },
@@ -198,15 +216,23 @@ private val HelmetConnectionState.canRetry: Boolean
         this is HelmetConnectionState.MissingPattern ||
         this is HelmetConnectionState.Error
 
+/** The wordmark in LED dots, in the color of the visor, and the connection status. */
 @Composable
-private fun HomeHeader(label: String, dot: @Composable () -> Unit, modifier: Modifier) {
+private fun HomeHeader(state: HelmetState?, label: String, dot: @Composable () -> Unit, modifier: Modifier) {
     Column(modifier.padding(bottom = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            "HELMET",
-            style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 3.sp),
-            color = MaterialTheme.colorScheme.primary,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        val ink = visorInk(state)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            EarPanelMark(lit = ink.lit)
+            LedText(
+                "HELMET",
+                style = HelmetText.wordmark,
+                color = ink.color,
+                brush = ink.brush,
+                glow = ink.lit,
+                modifier = Modifier.semantics { heading() },
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             dot()
             Text(
                 label,
@@ -236,8 +262,8 @@ private fun ConnectionNotice(connection: HelmetConnectionState, device: Pixelbla
             connection is HelmetConnectionState.Reconnecting
         )
     Column(modifier.padding(horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        if (busy) CircularProgressIndicator(Modifier.size(24.dp).padding(bottom = 4.dp))
-        Text(title, style = MaterialTheme.typography.titleSmall, textAlign = TextAlign.Center)
+        if (busy) PyramidLoader(Led.Amber, Modifier.padding(bottom = 6.dp))
+        Text(title, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center)
         detail?.takeIf(String::isNotBlank)?.let {
             Text(
                 it,
@@ -263,7 +289,7 @@ private fun WaitingNotice(action: HelmetAction, presets: List<HelmetPreset>, mod
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
     ) {
-        CircularProgressIndicator(Modifier.size(20.dp))
+        PyramidLoader(Led.Amber, size = 20.dp)
         Text(
             "$name when connected",
             style = MaterialTheme.typography.bodySmall,
@@ -273,7 +299,11 @@ private fun WaitingNotice(action: HelmetAction, presets: List<HelmetPreset>, mod
     }
 }
 
-/** The main control: fades every LED out, or back in. The segment state stays the same. */
+/**
+ * The main control: fades every LED out, or back in. The segment state stays the same. While the
+ * helmet is lit, the button is black with a red ring; while it is dark, it is white. The one-handed
+ * gesture of the watch (for example a double pinch) also presses it.
+ */
 @Composable
 private fun BlackoutButton(
     blackout: Boolean,
@@ -283,31 +313,64 @@ private fun BlackoutButton(
     transformation: SurfaceTransformation,
 ) {
     val colors = MaterialTheme.colorScheme
-    Button(
-        onClick = onClick,
-        modifier = modifier.heightIn(min = 64.dp),
-        enabled = enabled,
-        colors = if (blackout) {
-            ButtonDefaults.buttonColors()
+    val interactionSource = remember { MutableInteractionSource() }
+    val gesture = rememberOneHandedGestureConfiguration(action = OneHandedGestureAction.Primary)
+    val indicator = remember { OneHandedGestureClickIndicatorState() }
+    val scope = rememberCoroutineScope()
+    val title = if (blackout) "Lights on" else "Blackout"
+    val buttonModifier = modifier.heightIn(min = 64.dp).then(
+        if (enabled) {
+            Modifier.oneHandedGesture(
+                gestureConfiguration = gesture,
+                onGestureLabel = title,
+                interactionSource = interactionSource,
+                onGestureAvailable = { scope.launch { indicator.showIndicator() } },
+                onGesture = onClick,
+            )
         } else {
-            ButtonDefaults.buttonColors(
-                containerColor = colors.errorContainer,
-                contentColor = colors.onErrorContainer,
-                secondaryContentColor = colors.onErrorContainer.copy(alpha = 0.8f),
-                iconColor = colors.error,
-            )
+            Modifier
         },
-        transformation = transformation,
-        icon = {
-            Icon(
-                if (blackout) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
-                contentDescription = null,
-                modifier = Modifier.size(ButtonDefaults.LargeIconSize),
-            )
-        },
-        secondaryLabel = { Text(if (blackout) "The helmet is dark" else "Fade all lights out") },
-        label = { Text(if (blackout) "Lights on" else "Blackout") },
     )
+    val icon: @Composable () -> Unit = {
+        Icon(
+            if (blackout) Icons.Rounded.LightMode else Icons.Rounded.PowerSettingsNew,
+            contentDescription = null,
+            modifier = Modifier.size(ButtonDefaults.LargeIconSize),
+        )
+    }
+    val label: @Composable RowScope.() -> Unit = {
+        OneHandedGestureClickIndicator(gesture, indicator) { Text(title) }
+    }
+    if (blackout) {
+        Button(
+            onClick = onClick,
+            modifier = buttonModifier,
+            enabled = enabled,
+            interactionSource = interactionSource,
+            transformation = transformation,
+            icon = { icon() },
+            secondaryLabel = { Text("The helmet is dark") },
+            label = label,
+        )
+    } else {
+        Button(
+            onClick = onClick,
+            modifier = buttonModifier,
+            enabled = enabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color.Black,
+                contentColor = colors.onSurface,
+                secondaryContentColor = colors.onSurfaceVariant,
+                iconColor = Led.Red,
+            ),
+            border = BorderStroke(1.5.dp, Led.Red),
+            interactionSource = interactionSource,
+            transformation = transformation,
+            icon = { icon() },
+            secondaryLabel = { Text("Fade all lights out") },
+            label = label,
+        )
+    }
 }
 
 @Composable
