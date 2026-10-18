@@ -183,6 +183,10 @@ class HelmetRepository private constructor(context: Context) {
             }
         }
         scope.launch {
+            // The other app gets the built-in presets through the preset merge.
+            preferences.addBuiltInPresets()?.let(companionSync::publishPresets)
+        }
+        scope.launch {
             companionSync.presetUpdates.collect { remote ->
                 val merged = preferences.updatePresets { local -> HelmetPresets.merge(local, remote) }
                 // Send the merge back when the other app does not have it yet.

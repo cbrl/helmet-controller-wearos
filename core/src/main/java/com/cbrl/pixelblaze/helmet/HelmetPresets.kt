@@ -18,7 +18,7 @@ data class HelmetPreset(
 )
 
 object HelmetPresets {
-    const val MAX_PRESETS = 24
+    const val MAX_PRESETS = 40
     const val MAX_NAME_LENGTH = 28
     val TOMBSTONE_TTL_MILLIS: Long = TimeUnit.DAYS.toMillis(30)
 

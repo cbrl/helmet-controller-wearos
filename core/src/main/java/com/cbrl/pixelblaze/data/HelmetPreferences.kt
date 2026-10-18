@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.cbrl.pixelblaze.device.PixelblazeEndpoint
+import com.cbrl.pixelblaze.helmet.BuiltInPresets
 import com.cbrl.pixelblaze.helmet.HelmetPreset
 import com.cbrl.pixelblaze.helmet.HelmetPresets
 import com.cbrl.pixelblaze.helmet.HelmetProtocol
@@ -32,6 +33,7 @@ class HelmetPreferences(context: Context) {
         val HELMET_STATE = stringPreferencesKey("helmet_state")
         val HELMET_STATE_UPDATED_AT = longPreferencesKey("helmet_state_updated_at")
         val PRESETS = stringPreferencesKey("presets")
+        val BUILT_IN_PRESETS_VERSION = intPreferencesKey("built_in_presets_version")
     }
 
     val selectedDevice: Flow<PixelblazeEndpoint?> = dataStore.data
@@ -96,6 +98,24 @@ class HelmetPreferences(context: Context) {
             val current = preferences[PRESETS]?.let(HelmetPresets::fromJson).orEmpty()
             updated = transform(current)
             preferences[PRESETS] = HelmetPresets.toJson(updated).toString()
+        }
+        return updated
+    }
+
+    /**
+     * Adds the built-in presets that this app has not added yet (see [BuiltInPresets.addNew]).
+     * Returns the new list, or null when there was nothing to add.
+     */
+    suspend fun addBuiltInPresets(): List<HelmetPreset>? {
+        var updated: List<HelmetPreset>? = null
+        dataStore.edit { preferences ->
+            val seenVersion = preferences[BUILT_IN_PRESETS_VERSION] ?: 0
+            if (seenVersion >= BuiltInPresets.VERSION) return@edit
+            val current = preferences[PRESETS]?.let(HelmetPresets::fromJson).orEmpty()
+            val presets = BuiltInPresets.addNew(current, seenVersion)
+            preferences[PRESETS] = HelmetPresets.toJson(presets).toString()
+            preferences[BUILT_IN_PRESETS_VERSION] = BuiltInPresets.VERSION
+            updated = presets
         }
         return updated
     }
